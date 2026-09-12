@@ -1,10 +1,4 @@
-FROM ghcr.io/ucb-bar/chia:v1.0.1
-
-USER root
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential git \
-    && rm -rf /var/lib/apt/lists/*
-USER ray
+FROM ghcr.io/ucb-bar/chia-riscv-cross:v1.0.1
 
 RUN pip install --no-cache-dir \
     "git+https://github.com/exo-lang/exo.git@defe17283d15553ca9d6ad70b2e9f4c22ff36ce2"

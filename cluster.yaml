@@ -10,14 +10,6 @@ auth:
             ssh_private_key: ${CHIA_FIRESIM_PRIVATE_KEY}
 
 available_node_types:
-    riscv_cross:
-        resources: {"riscv_build": 8}
-        num_workers: 1
-        compatible_ips: ["${CHIA_HEAD_IP}"]
-        docker:
-            image: "ghcr.io/ucb-bar/chia-riscv-cross:v1.0.1"
-            container_name: "chia-riscv-cross"
-
     perflab_firesim:
         resources: {"firesim": 1}
         num_workers: 1
@@ -25,14 +17,29 @@ available_node_types:
         worker_env_commands:
             - "conda activate firesim_chia_env"
 
-    exo:
-        resources: {"exo": 8}
+    exo_compiler:
+        resources: {"exo_build": 8}
         num_workers: 1
         compatible_ips: ["${CHIA_HEAD_IP}"]
         docker:
             image: "chia-exo:latest"
             container_name: "chia-exo"
             pull_before_run: False
+
+    opencode:
+        resources: {"opencode_creds": 1}
+        num_workers: 1
+        compatible_ips: ["${CHIA_HEAD_IP}"]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-opencode:v1.0.1"
+            container_name: "chia-opencode"
+            run_options:
+                - "-v ${HOME}/.config/gcloud:/mnt/host-gcloud:ro"
+                - "-e GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}"
+                - "-e VERTEX_LOCATION=global"
+            run_setup_commands:
+                - "mkdir -p ~/.config/gcloud"
+                - "sudo cat /mnt/host-gcloud/application_default_credentials.json > ~/.config/gcloud/application_default_credentials.json"
 
 head_env_commands:
     - "source ${CHIA_WORKSPACE_PATH}/.venv/bin/activate"
