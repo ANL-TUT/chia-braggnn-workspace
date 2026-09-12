@@ -1,0 +1,46 @@
+provider:
+    head_ip: ${CHIA_HEAD_IP}
+
+auth:
+    ssh_user: eyrin
+    ssh_private_key: ${CHIA_HEAD_PRIVATE_KEY}
+    overrides:
+        "133.15.45.113":
+            ssh_user: eyrin
+            ssh_private_key: ${CHIA_FIRESIM_PRIVATE_KEY}
+
+available_node_types:
+    riscv_cross:
+        resources: {"riscv_build": 8}
+        num_workers: 1
+        compatible_ips: ["${CHIA_HEAD_IP}"]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-riscv-cross:v1.0.1"
+            container_name: "chia-riscv-cross"
+
+    perflab_firesim:
+        resources: {"firesim": 1}
+        num_workers: 1
+        compatible_ips: ["133.15.45.113"]
+        worker_env_commands:
+            - "conda activate firesim_chia_env"
+
+    exo:
+        resources: {"exo": 8}
+        num_workers: 1
+        compatible_ips: ["${CHIA_HEAD_IP}"]
+        docker:
+            image: "chia-exo:latest"
+            container_name: "chia-exo"
+            pull_before_run: False
+
+head_env_commands:
+    - "source ${CHIA_WORKSPACE_PATH}/.venv/bin/activate"
+
+head_start_ray_commands:
+    - "ray stop"
+    - "ray start --head --port=6379 --include-dashboard=True --dashboard-host=0.0.0.0 --dashboard-agent-listen-port=0"
+
+worker_start_ray_commands:
+    - "ray stop"
+    - "ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0"

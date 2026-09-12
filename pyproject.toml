@@ -1,0 +1,12 @@
+[project]
+name = "chia-braggnn-workspace"
+version = "0.1.0"
+requires-python = "==3.10.19"
+dependencies = [
+    "chialoops==1.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.7",
+]

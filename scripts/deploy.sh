@@ -1,0 +1,12 @@
+#!/bin/bash
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+export UV_ENV_FILE="$PWD/.env"
+
+docker build -t chia-exo:latest -f dockerfiles/ExoDockerfile dockerfiles/
+
+uv run chia down -y cluster.yaml || true
+uv run chia up -y cluster.yaml
