@@ -8,8 +8,8 @@ from chia.base.ChiaFunction import ChiaFunction
 
 CY_DIR = "/nfs/app/chipyard"
 FIRESIM_DIR = f"{CY_DIR}/sims/firesim"
-HWDB = f"{CY_DIR}/sims/firesim-staging/sample_config_hwdb.yaml"
-BUILD_RECIPES = f"{CY_DIR}/sims/firesim-staging/sample_config_build_recipes.yaml"
+HWDB = f"{FIRESIM_DIR}/deploy/config_hwdb.yaml"
+BUILD_RECIPES = f"{FIRESIM_DIR}/deploy/config_build_recipes.yaml"
 
 
 def stage_bare_workload(elf: bytes) -> None:

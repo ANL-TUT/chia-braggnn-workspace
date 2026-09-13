@@ -64,6 +64,12 @@ braggnn_exo.py: it moves the integer accumulation of matmul_transA to Gemmini \
 this way (scaling and rounding stay on the CPU), and it shows loop fusion by \
 inlining conv2 and leaky3 into braggnn_inference and fusing their loop nests.
 
+Known Gemmini quirk on this hardware: `zero_acc_i32` issued right after \
+`ld_acc_i32` on the same accumulator can be partly lost (the zero load seems to \
+overtake the pending DRAM load, like ucb-bar/gemmini#67), leaving stale loaded \
+values. Avoid that sequence. To clear an accumulator you just loaded, load a \
+zero DRAM buffer with `ld_acc_i32`, or overwrite it with `matmul_i8` instead.
+
 Never use `unsafe_assert_eq` or any other unsafe option such as \
 `unsafe_disable_check=True` / `unsafe_disable_checks=True`: they skip the \
 equivalence checks instead of proving equivalence. Never construct or rewrite \
