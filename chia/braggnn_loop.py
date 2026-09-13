@@ -53,6 +53,12 @@ reorder_loops, divide_loop, unroll_loop, lift_alloc, bind_expr, stage_mem, \
 call_eqv, simplify, ...) to the existing procs in appended code, and rebind \
 `braggnn_inference` to the scheduled proc so it is what `exocc` compiles.
 
+Heap allocation is not wanted: the original intermediate buffers are \
+`DRAM_STATIC`. Buffers created by scheduling (stage_mem, bind_expr, \
+expand_dim, ...) default to `DRAM`, which becomes malloc/free, so move each new \
+CPU-side buffer to `DRAM_STATIC` (from exo.libs.memories) with `set_memory`, \
+unless it belongs on a Gemmini memory (GEMM_SCRATCH / GEMM_ACCUM).
+
 You may also offload work to Gemmini with exo.platforms.gemmini (block instrs \
 such as zero_acc_i32, ld_i8_id1/ld_i8_id2, matmul_acc_i8, st_acc_i32 on \
 GEMM_SCRATCH/GEMM_ACCUM memories, whose innermost dimension must be exactly 16), \

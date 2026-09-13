@@ -40,7 +40,7 @@ from exo.API_scheduling import (
     simplify,
     stage_mem,
 )
-from exo.libs.memories import GEMM_ACCUM, GEMM_SCRATCH
+from exo.libs.memories import DRAM_STATIC, GEMM_ACCUM, GEMM_SCRATCH
 from exo.platforms.gemmini import (
     ld_i8_id1,
     ld_i8_id2,
@@ -92,6 +92,10 @@ def _schedule_matmul_transA_gemmini(p):
     # CPU-readable copy of the accumulator for the scale loop.
     p = stage_mem(p, _nest(p, "C[_] = _", 2), "sum[0:9, 0:9]", "sum_out")
     p = simplify(p)
+    # Buffers created by scheduling default to DRAM (heap malloc); keep the CPU
+    # side on static storage.
+    p = set_memory(p, "At : _", DRAM_STATIC)
+    p = set_memory(p, "sum_out : _", DRAM_STATIC)
 
     # Move buffers to Gemmini memories and swap the loops for Gemmini instrs.
     p = set_memory(p, "sum : _", GEMM_ACCUM)

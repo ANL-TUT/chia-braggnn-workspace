@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from exo.API_scheduling import rename
 from exo.libs.externs import fmaxf, relu, select
+from exo.libs.memories import DRAM_STATIC
 
 from exo import DRAM, proc
 
@@ -260,31 +261,31 @@ def nlb(
     output: i8[CONV1_DIM, CONV1_DIM, CONV1_FILTERS] @ DRAM,
 ):
     # --- Theta 1x1 conv: 9x9x64 -> 9x9x32 ---
-    theta_out: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM
+    theta_out: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM_STATIC
     nlb_qkv_conv(input, nlb_theta_weights, nlb_theta_bias, theta_out, nlb_theta_scale)
 
     # Reshape NHWC [9x9x32] -> [32][81]
-    theta_reshaped: i8[CONV2_FILTERS, CONV1_DIM, CONV1_DIM] @ DRAM
+    theta_reshaped: i8[CONV2_FILTERS, CONV1_DIM, CONV1_DIM] @ DRAM_STATIC
     for c in seq(0, CONV2_FILTERS):
         for h in seq(0, CONV1_DIM):
             for w in seq(0, CONV1_DIM):
                 theta_reshaped[c, h, w] = theta_out[h, w, c]
 
     # --- Phi 1x1 conv: 9x9x64 -> 9x9x32 ---
-    phi_out: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM
+    phi_out: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM_STATIC
     nlb_qkv_conv(input, nlb_phi_weights, nlb_phi_bias, phi_out, nlb_phi_scale)
 
-    phi_reshaped: i8[CONV2_FILTERS, CONV1_DIM, CONV1_DIM] @ DRAM
+    phi_reshaped: i8[CONV2_FILTERS, CONV1_DIM, CONV1_DIM] @ DRAM_STATIC
     for c in seq(0, CONV2_FILTERS):
         for h in seq(0, CONV1_DIM):
             for w in seq(0, CONV1_DIM):
                 phi_reshaped[c, h, w] = phi_out[h, w, c]
 
     # --- G 1x1 conv: 9x9x64 -> 9x9x32 ---
-    g_out: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM
+    g_out: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM_STATIC
     nlb_qkv_conv(input, nlb_g_weights, nlb_g_bias, g_out, nlb_g_scale)
 
-    g_reshaped: i8[CONV2_FILTERS, CONV1_DIM, CONV1_DIM] @ DRAM
+    g_reshaped: i8[CONV2_FILTERS, CONV1_DIM, CONV1_DIM] @ DRAM_STATIC
     for c in seq(0, CONV2_FILTERS):
         for h in seq(0, CONV1_DIM):
             for w in seq(0, CONV1_DIM):
@@ -293,13 +294,13 @@ def nlb(
     # --- Attention: theta^T @ phi -> [81][81] ---
     # theta_reshaped[32][81], phi_reshaped[32][81]
     # C[81][81] = theta^T[81][32] @ phi[32][81]
-    attention: i8[CONV1_DIM, CONV1_DIM, CONV1_DIM, CONV1_DIM] @ DRAM
+    attention: i8[CONV1_DIM, CONV1_DIM, CONV1_DIM, CONV1_DIM] @ DRAM_STATIC
     matmul_transA(theta_reshaped, phi_reshaped, attention, nlb_matmul_scale)
 
     # --- Softmax (per row, matching Gemmini Taylor approximation) ---
     for i1 in seq(0, CONV1_DIM):
         for i2 in seq(0, CONV1_DIM):
-            row_float: f32[CONV1_DIM, CONV1_DIM] @ DRAM
+            row_float: f32[CONV1_DIM, CONV1_DIM] @ DRAM_STATIC
             max_val: f32 @ DRAM
             max_val = -1000000000.0
             for j1 in seq(0, CONV1_DIM):
@@ -344,18 +345,18 @@ def nlb(
     # --- Attended output: attention @ g^T -> [81][32] ---
     # attention[81][81], g_reshaped[32][81]
     # C[81][32] = attention[81][81] @ g^T[81][32]
-    attended: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM
+    attended: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM_STATIC
     matmul_transB(attention, g_reshaped, attended, nlb_matmul_1_scale)
 
     # Reshape [81][32] -> NHWC [9][9][32]
-    tpg_output: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM
+    tpg_output: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM_STATIC
     for c in seq(0, CONV2_FILTERS):
         for h in seq(0, CONV1_DIM):
             for w in seq(0, CONV1_DIM):
                 tpg_output[h, w, c] = attended[h, w, c]
 
     # --- out_cnn 1x1 conv: 9x9x32 -> 9x9x64 ---
-    nlb_conv_out: i8[CONV1_DIM, CONV1_DIM, CONV1_FILTERS] @ DRAM
+    nlb_conv_out: i8[CONV1_DIM, CONV1_DIM, CONV1_FILTERS] @ DRAM_STATIC
     nlb_out_conv(tpg_output, nlb_out_weights, nlb_out_bias, nlb_conv_out, nlb_out_scale)
 
     # --- Residual add: output = input * B_scale + nlb_conv_out * A_scale ---
@@ -417,7 +418,7 @@ def braggnn_inference(
     output: i8[OUTPUT_UNITS, 1, 1] @ DRAM,
 ):
     # QuantizeLinear: y_scale = 0.007874015718698502 -> 1/0.007874 = 127
-    input: i8[INPUT_DIM, INPUT_DIM, 1] @ DRAM
+    input: i8[INPUT_DIM, INPUT_DIM, 1] @ DRAM_STATIC
     for h in seq(0, INPUT_DIM):
         for w in seq(0, INPUT_DIM):
             q: f32
@@ -425,11 +426,11 @@ def braggnn_inference(
             input[h, w, 0] = q
 
     # Conv1: 11x11x1 -> 9x9x64
-    conv1_out: i8[CONV1_DIM, CONV1_DIM, CONV1_FILTERS] @ DRAM
+    conv1_out: i8[CONV1_DIM, CONV1_DIM, CONV1_FILTERS] @ DRAM_STATIC
     conv1(input, conv1_weights, conv1_bias, conv1_out, conv1_scale)
 
     # Non-Local Block: 9x9x64 -> 9x9x64
-    nlb_out: i8[CONV1_DIM, CONV1_DIM, CONV1_FILTERS] @ DRAM
+    nlb_out: i8[CONV1_DIM, CONV1_DIM, CONV1_FILTERS] @ DRAM_STATIC
     nlb(
         conv1_out,
         nlb_theta_weights,
@@ -457,18 +458,18 @@ def braggnn_inference(
     leaky1(nlb_out, leaky1_scale)
 
     # Conv2: 9x9x64 -> 7x7x32
-    conv2_out: i8[CONV2_DIM, CONV2_DIM, CONV2_FILTERS] @ DRAM
+    conv2_out: i8[CONV2_DIM, CONV2_DIM, CONV2_FILTERS] @ DRAM_STATIC
     conv2(nlb_out, conv2_weights, conv2_bias, conv2_out, conv2_scale)
 
     # LeakyReLU + requant (Conv2 output scale -> Conv3 input scale)
     leaky3(conv2_out, leaky3_scale)
 
     # Conv3: 7x7x32 -> 5x5x8
-    conv3_out: i8[CONV3_DIM, CONV3_DIM, CONV3_FILTERS] @ DRAM
+    conv3_out: i8[CONV3_DIM, CONV3_DIM, CONV3_FILTERS] @ DRAM_STATIC
     conv3(conv2_out, conv3_weights, conv3_bias, conv3_out, conv3_scale)
 
     # Flatten: NHWC [5][5][8] -> NCHW order [8][5][5] = 200 elements
-    flattened: i8[CONV3_FILTERS, CONV3_DIM, CONV3_DIM] @ DRAM
+    flattened: i8[CONV3_FILTERS, CONV3_DIM, CONV3_DIM] @ DRAM_STATIC
     for ch in seq(0, CONV3_FILTERS):
         for r in seq(0, CONV3_DIM):
             for c in seq(0, CONV3_DIM):
@@ -478,25 +479,25 @@ def braggnn_inference(
     leaky5(flattened, leaky5_scale)
 
     # FC1: 200 -> 16
-    fc1_out: i8[FC1_UNITS, 1, 1] @ DRAM
+    fc1_out: i8[FC1_UNITS, 1, 1] @ DRAM_STATIC
     fc1(flattened, fc1_weights, fc1_bias, fc1_out, fc1_scale)
 
     dense1_leaky(fc1_out, dense1_leaky_scale)
 
     # FC2: 16 -> 8
-    fc2_out: i8[FC2_UNITS, 1, 1] @ DRAM
+    fc2_out: i8[FC2_UNITS, 1, 1] @ DRAM_STATIC
     fc2(fc1_out, fc2_weights, fc2_bias, fc2_out, fc2_scale)
 
     dense3_leaky(fc2_out, dense3_leaky_scale)
 
     # FC3: 8 -> 4
-    fc3_out: i8[FC3_UNITS, 1, 1] @ DRAM
+    fc3_out: i8[FC3_UNITS, 1, 1] @ DRAM_STATIC
     fc3(fc2_out, fc3_weights, fc3_bias, fc3_out, fc3_scale)
 
     dense5_leaky(fc3_out, dense5_leaky_scale)
 
     # FC4: 4 -> 2
-    fc4_out: i8[FC4_UNITS, 1, 1] @ DRAM
+    fc4_out: i8[FC4_UNITS, 1, 1] @ DRAM_STATIC
     fc4(fc3_out, fc4_weights, fc4_bias, fc4_out, fc4_scale)
 
     dense7_leaky(fc4_out, dense7_leaky_scale)
