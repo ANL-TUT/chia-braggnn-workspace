@@ -35,7 +35,7 @@ BUILD_TIMEOUT_SECONDS = 600
 
 
 @ChiaFunction(resources={"exo_build": 1})
-def stage_work_dir(work_dir: str, source_dir: str | None = None) -> None:
+def prepare_work_dir(work_dir: str, source_dir: str | None = None) -> None:
     """Seed work_dir with braggnn_exo.py from source_dir (default: the shipped one).
 
     Also copies the C harness (with Gemmini headers and allocators) into

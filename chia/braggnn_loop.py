@@ -17,7 +17,7 @@ from pathlib import Path
 from chia.base.ChiaFunction import get
 from chia.base.tools.BashTool import BashTool
 from chia.models.opencode import AdditionalModelProvider, OpenCodeLLM
-from exo_compiler import build_elf, stage_work_dir
+from exo_compiler import build_elf, prepare_work_dir
 from firesim import run_workload
 
 MODEL = "google-vertex/gemini-3.8-flash"
@@ -236,7 +236,7 @@ def main() -> None:
 
     run_root = f"{WORK_ROOT}/{args.out_dir.name}"
     best_dir = f"{run_root}/iter_00"
-    get(stage_work_dir.chia_remote(best_dir))
+    get(prepare_work_dir.chia_remote(best_dir))
     best_source, best = evaluate(best_dir)
     save(args.out_dir / "iter_00", best_source, best)
     print(f"iter 0 (baseline): {best.summary()}", flush=True)
@@ -248,7 +248,7 @@ def main() -> None:
     last = best
     for i in range(1, args.iterations + 1):
         work_dir = f"{run_root}/iter_{i:02d}"
-        get(stage_work_dir.chia_remote(work_dir, best_dir))
+        get(prepare_work_dir.chia_remote(work_dir, best_dir))
         exo_bash = BashTool(
             "exo_bash",
             work_dir,

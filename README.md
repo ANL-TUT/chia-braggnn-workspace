@@ -28,30 +28,39 @@ LLM (OpenCode + Gemini) で `exo/braggnn_exo.py` を最適化するループ
 
 ```mermaid
 graph TD
-    subgraph head["head (133.15.45.28)"]
-        D["chia/braggnn_loop.py<br/>ray job driver"]
+    subgraph head[head]
+        D[braggnn_loop.py]
     end
 
-    subgraph llm["opencode worker — docker: chia-opencode<br/>resources: opencode_creds 1"]
-        L["OpenCodeLLM.prompt<br/>Gemini on Vertex AI"]
+    subgraph llm[opencode]
+        L[Gemini]
     end
 
-    subgraph exo["exo_compiler worker — docker: chia-exo<br/>resources: exo_build 8"]
-        B["exo_bash (BashTool)<br/>edit braggnn_exo.py"]
-        E["build_elf<br/>exocc + riscv64 gcc (htif baremetal)"]
+    subgraph exo[exo_compiler]
+        S[prepare_work_dir]
+        B[exo_bash]
+        E[build_elf]
     end
 
-    subgraph fire["perflab_firesim (133.15.45.113)<br/>resources: firesim 1"]
-        F["run_workload<br/>Alveo U250 / Rocket + Gemmini"]
+    subgraph fire[firesim]
+        F[run_workload]
     end
 
+    D -->|prepare| S
     D -->|prompt| L
-    L -->|MCP tool calls| B
-    D -->|work_dir| E
-    E -->|braggnn.riscv| D
+    L -->|edit| B
+    D -->|build| E
+    E -->|ELF| D
     D -->|ELF| F
-    F -->|"uartlog: cycles, PASSED / FAILED"| D
+    F -->|uartlog| D
 ```
+
+| worker | 場所 / docker | resource | 役割 |
+|---|---|---|---|
+| head | 133.15.45.28 | - | `chia/braggnn_loop.py`（ray job driver） |
+| opencode | chia-opencode | `opencode_creds` 1 | OpenCode + Gemini (Vertex AI) |
+| exo_compiler | chia-exo | `exo_build` 8 | `chia/exo_compiler.py`: 作業ディレクトリ作成、BashTool で LLM が `braggnn_exo.py` を編集、exocc + riscv64 gcc で ELF ビルド |
+| firesim | 133.15.45.113 | `firesim` 1 | `chia/firesim.py`: Alveo U250 / Rocket + Gemmini（`FireSimGemminiRocketConfig`）で実行、avg cycles と PASSED / FAILED を返す |
 
 ## クラスタ立ち上げ（やらないでください）
 
