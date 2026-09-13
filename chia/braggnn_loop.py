@@ -1,6 +1,7 @@
 """LLM-driven optimization loop for the BraggNN Exo kernel.
 
-Each iteration lets OpenCode (Gemini on Vertex AI) edit braggnn_exo.py in the
+Each iteration lets OpenCode (Gemini on Vertex AI, or Qwen on the Perf-lab
+Wormhole server with --llm qwen) edit braggnn_exo.py in the
 Exo container through a BashTool, then compiles it with Exo, builds
 braggnn.riscv in the same container and runs it on FireSim.
 A candidate that PASSES with fewer average cycles becomes the new best.
@@ -8,7 +9,6 @@ A candidate that PASSES with fewer average cycles becomes the new best.
 
 import argparse
 import json
-import os
 import re
 import time
 from dataclasses import asdict, dataclass
@@ -20,7 +20,6 @@ from chia.models.opencode import AdditionalModelProvider, OpenCodeLLM
 from exo_compiler import build_elf, prepare_work_dir
 from firesim import run_workload
 
-MODEL = "google-vertex/gemini-3.8-flash"
 WORK_ROOT = "/home/ray/braggnn-loop"
 LOG_TAIL = 3000
 # Candidates must be derived with checked exo.API_scheduling operations only:
@@ -194,14 +193,7 @@ def save(run_dir: Path, source: str | None, evaluation: Evaluation) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=5)
-    parser.add_argument(
-        "--model", default=os.environ.get("BRAGGNN_OPENCODE_MODEL", MODEL)
-    )
-    # Unset on the driver: let opencode expand it from the container env instead.
-    parser.add_argument(
-        "--project",
-        default=os.environ.get("GOOGLE_CLOUD_PROJECT", "{env:GOOGLE_CLOUD_PROJECT}"),
-    )
+    parser.add_argument("--llm", choices=["gemini", "qwen"], default="gemini")
     parser.add_argument(
         "--out-dir",
         type=Path,
@@ -209,22 +201,32 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    provider_id, model_id = args.model.split("/", 1)
+    if args.llm == "gemini":
+        model = "google-vertex/gemini-3.8-flash"
+        provider = AdditionalModelProvider(
+            id="google-vertex",
+            npm="@ai-sdk/google-vertex",
+            name="Google Vertex AI",
+            models=["gemini-3.8-flash"],
+            # Expanded by opencode from the container env (set in cluster.yaml).
+            options={"project": "{env:GOOGLE_CLOUD_PROJECT}", "location": "global"},
+        )
+    else:
+        model = "perflab-wormhole/Qwen/Qwen3.8-27B"
+        provider = AdditionalModelProvider(
+            id="perflab-wormhole",
+            npm="@ai-sdk/openai-compatible",
+            name="Perf-lab Wormhole",
+            models={"Qwen/Qwen3.8-27B": {"name": "Qwen3.8-27B"}},
+            base_url="http://133.15.45.6:8000/v1",
+        )
     llm = OpenCodeLLM(
-        model=args.model,
+        model=model,
         system_message=SYSTEM_MESSAGE,
         timeout_seconds=1800,
         # A timed-out session is not worth 3x the wait; move on to the next iteration.
         retries=1,
-        additional_providers=[
-            AdditionalModelProvider(
-                id=provider_id,
-                npm="@ai-sdk/google-vertex",
-                name="Google Vertex AI",
-                models=[model_id],
-                options={"project": args.project, "location": "global"},
-            )
-        ],
+        additional_providers=[provider],
         # Keep the agent off opencode's own container; it works via exo_bash only.
         config={
             "edit": "deny",
