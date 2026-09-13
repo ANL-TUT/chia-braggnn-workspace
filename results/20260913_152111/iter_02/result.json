@@ -1,0 +1,6 @@
+{
+  "stage": "llm",
+  "passed": false,
+  "avg_cycles": null,
+  "avg_error": null
+}

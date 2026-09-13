@@ -1,0 +1,9 @@
+{
+  "stage": "firesim",
+  "passed": true,
+  "avg_cycles": 25056479,
+  "avg_error": [
+    0.205,
+    0.196
+  ]
+}
