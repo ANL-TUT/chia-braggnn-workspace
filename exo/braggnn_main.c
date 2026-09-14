@@ -4,7 +4,7 @@
 #include <stdio.h>
 
 #include "braggnn_data.h"
-#include "braggnn_exo.h"
+#include "braggnn_inference.h"
 #include "xprintf.h"
 
 #define DEQUANT_SCALE (11.0f / 127.0f)

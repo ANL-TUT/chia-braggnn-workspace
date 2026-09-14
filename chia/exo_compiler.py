@@ -10,7 +10,13 @@ from chia.base.ChiaFunction import ChiaFunction
 SHIPPED_EXO_DIR = Path("exo")
 # Harness files and directories copied next to the generated C: the C driver
 # and the Gemmini headers (include/, rocc-software/).
-HARNESS_FILES = ("braggnn_main.c", "braggnn_data.h", "xprintf.c", "xprintf.h")
+HARNESS_FILES = (
+    "braggnn_main.c",
+    "braggnn_inference.h",
+    "braggnn_data.h",
+    "xprintf.c",
+    "xprintf.h",
+)
 HARNESS_DIRS = ("include", "rocc-software")
 # Gemmini scratchpad allocators that exo.platforms.gemmini code calls; they ship
 # inside the exo package installed in the container (exo/libs).
