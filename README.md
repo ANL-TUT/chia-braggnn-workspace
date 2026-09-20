@@ -24,7 +24,7 @@ uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- pyt
 
 ## システム構成
 
-LLM (OpenCode + Gemini / Qwen) で `exo/braggnn_exo.py` を最適化するループ
+LLM (OpenCode + Gemini) で `exo/braggnn_exo.py` を最適化するループ
 
 ```mermaid
 graph TD
@@ -38,12 +38,7 @@ graph TD
 
     V[Vertex AI<br/>Gemini]
 
-    subgraph tt[tenstorrent]
-        Q[vLLM<br/>Qwen3.8-27B]
-    end
-
-    L -.->|"--llm gemini"| V
-    L -.->|"--llm qwen"| Q
+    L -.-> V
 
     subgraph exo[exo_compiler]
         S[prepare_work_dir]
@@ -67,16 +62,15 @@ graph TD
 | worker | 場所 / docker | resource | 役割 |
 |---|---|---|---|
 | head | 133.15.45.28 | - | `chia/braggnn_loop.py`（ray job driver） |
-| opencode | chia-opencode | `opencode_creds` 1 | OpenCode。`--llm gemini`（デフォルト）で Gemini (Vertex AI)、`--llm qwen` で tenstorrent 上の Qwen |
+| opencode | chia-opencode | `opencode_creds` 1 | OpenCode。Gemini (Vertex AI) を使用 |
 | exo_compiler | chia-exo | `exo_build` 8 | `chia/exo_compiler.py`: 作業ディレクトリ作成、BashTool で LLM が `braggnn_exo.py` を編集、exocc + riscv64 gcc で ELF ビルド |
 | firesim | 133.15.45.113 | `firesim` 1 | `chia/firesim.py`: Alveo U250 / Rocket + Gemmini（`FireSimGemminiRocketConfig`）で実行、avg cycles と PASSED / FAILED を返す |
-| tenstorrent（ray 外） | 133.15.45.6:8000 | - | Tenstorrent Wormhole 上の vLLM で `Qwen/Qwen3.8-27B` を OpenAI 互換 API として提供（`--llm qwen` のときだけ使用） |
 
 ## 結果
 
 ### `results/20260913_152111/`
 
-`--iterations 5`、`--llm gemini`（`gemini-3.8-flash`）での実行結果。FireSim（Rocket + Gemmini）上で 10 パッチ推論したときの 1 パッチあたり平均サイクル数と、予測誤差の平均で評価（誤差の許容値は 0.5 px）。
+`--iterations 5`（`gemini-3.8-flash`）での実行結果。FireSim（Rocket + Gemmini）上で 10 パッチ推論したときの 1 パッチあたり平均サイクル数と、予測誤差の平均で評価（誤差の許容値は 0.5 px）。
 
 | iter | stage | 結果 | avg cycles | 高速化率 | avg error (px) | 備考 |
 |---|---|---|---:|---:|---|---|

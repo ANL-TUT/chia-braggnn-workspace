@@ -1,7 +1,6 @@
 """LLM-driven optimization loop for the BraggNN Exo kernel.
 
-Each iteration lets OpenCode (Gemini on Vertex AI, or Qwen on the Perf-lab
-Wormhole server with --llm qwen) edit braggnn_exo.py in the
+Each iteration lets OpenCode (Gemini on Vertex AI) edit braggnn_exo.py in the
 Exo container through a BashTool, then compiles it with Exo, builds
 braggnn.riscv in the same container and runs it on FireSim.
 A candidate that PASSES with fewer average cycles becomes the new best.
@@ -197,7 +196,6 @@ def save(run_dir: Path, source: str | None, evaluation: Evaluation) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=5)
-    parser.add_argument("--llm", choices=["gemini", "qwen"], default="gemini")
     parser.add_argument(
         "--out-dir",
         type=Path,
@@ -205,27 +203,16 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.llm == "gemini":
-        model = "google-vertex/gemini-3.8-flash"
-        provider = AdditionalModelProvider(
-            id="google-vertex",
-            npm="@ai-sdk/google-vertex",
-            name="Google Vertex AI",
-            models=["gemini-3.8-flash"],
-            # Expanded by opencode from the container env (set in cluster.yaml).
-            options={"project": "{env:GOOGLE_CLOUD_PROJECT}", "location": "global"},
-        )
-    else:
-        model = "perflab-wormhole/Qwen/Qwen3.8-27B"
-        provider = AdditionalModelProvider(
-            id="perflab-wormhole",
-            npm="@ai-sdk/openai-compatible",
-            name="Perf-lab Wormhole",
-            models={"Qwen/Qwen3.8-27B": {"name": "Qwen3.8-27B"}},
-            base_url="http://133.15.45.6:8000/v1",
-        )
+    provider = AdditionalModelProvider(
+        id="google-vertex",
+        npm="@ai-sdk/google-vertex",
+        name="Google Vertex AI",
+        models=["gemini-3.8-flash"],
+        # Expanded by opencode from the container env (set in cluster.yaml).
+        options={"project": "{env:GOOGLE_CLOUD_PROJECT}", "location": "global"},
+    )
     llm = OpenCodeLLM(
-        model=model,
+        model="google-vertex/gemini-3.8-flash",
         system_message=SYSTEM_MESSAGE,
         timeout_seconds=1800,
         # A timed-out session is not worth 3x the wait; move on to the next iteration.
