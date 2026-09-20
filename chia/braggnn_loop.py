@@ -45,12 +45,19 @@ arguments, order, types and shapes, because braggnn_main.c calls it.
 "*** PASSED ***" only then), so keep the arithmetic semantics.
 - Do NOT edit any existing @proc definition in braggnn_exo.py: leave every \
 @proc body and signature, the _make_* factories that build them, and the \
-constants exactly as they are. Only add new code after them.
+constants exactly as they are: they are the specification `replace` checks a \
+Gemmini instr against. The scheduling code after them is yours to rewrite.
+- Do NOT edit gemmini.py, whose instrs carry hand-written C that Exo does not \
+check; build_elf uses the shipped copy either way.
 
-Optimize purely by applying Exo scheduling (exo.API_scheduling: inline, \
-reorder_loops, divide_loop, unroll_loop, lift_alloc, bind_expr, stage_mem, \
-call_eqv, simplify, ...) to the existing procs in appended code, and rebind \
-`braggnn_inference` to the scheduled proc so it is what `exocc` compiles.
+braggnn_exo.py already offloads every layer to Gemmini: the scheduling code at \
+the end of the file swaps each proc's loop nest for an instr from gemmini.py \
+and rebinds `braggnn_inference` to the result. Improve on it with Exo \
+scheduling (exo.API_scheduling: inline, reorder_loops, divide_loop, \
+unroll_loop, lift_alloc, bind_expr, stage_mem, call_eqv, simplify, ...), \
+rewriting that scheduling code as freely as you like, and keep \
+`braggnn_inference` bound to the scheduled proc so it is what `exocc` compiles. \
+What is still on the CPU is the input quantization and the NCHW flatten.
 
 Heap allocation is not wanted: the original intermediate buffers are \
 `DRAM_STATIC`. Buffers created by scheduling (stage_mem, bind_expr, \
@@ -63,11 +70,7 @@ such as zero_acc_i32, ld_i8_id1/ld_i8_id2, matmul_acc_i8, st_acc_i32 on \
 GEMM_SCRATCH/GEMM_ACCUM memories, whose innermost dimension must be exactly 16), \
 but only through equivalence-preserving scheduling: bring the original loops \
 into the instr's form and swap them in with `replace`, which checks that the \
-statements match the instr's semantics. schedule_example.py in the working \
-directory is a complete, checked example meant to be appended to \
-braggnn_exo.py: it moves the integer accumulation of matmul_transA to Gemmini \
-this way (scaling and rounding stay on the CPU), and it shows loop fusion by \
-inlining conv2 and leaky3 into braggnn_inference and fusing their loop nests.
+statements match the instr's semantics.
 
 Known Gemmini quirk on this hardware: `zero_acc_i32` issued right after \
 `ld_acc_i32` on the same accumulator can be partly lost (the zero load seems to \
@@ -103,7 +106,8 @@ bare-metal ELF exactly as the loop does, e.g. `mkdir -p build && cp -r \
 harness/* build/ && cd build && exocc ../braggnn_exo.py -o . --stem braggnn_exo \
 && make -f /opt/riscv-harness/Makefile TARGET=verilator PROGRAM=braggnn \
 "SRCS=braggnn_main.c braggnn_exo.c xprintf.c gemm_malloc.c gemm_acc_malloc.c" \
-"EXTRA_CFLAGS=-I. -include stdint.h" EXTRA_LDFLAGS=`, and inspect it with \
+"EXTRA_CFLAGS=-I. -include stdint.h -include include/gemmini.h" \
+EXTRA_LDFLAGS=`, and inspect it with \
 riscv64-unknown-elf-objdump. Editing harness/ has no effect: the loop always \
 builds with the original harness.
 - The ELF cannot be run there (no FireSim or spike); the loop builds your \

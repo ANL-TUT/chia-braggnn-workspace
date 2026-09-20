@@ -34,7 +34,7 @@ MAKE_COMMAND = [
     "PROGRAM=braggnn",
     "SRCS=braggnn_main.c braggnn_exo.c xprintf.c gemm_malloc.c gemm_acc_malloc.c",
     # gemm_malloc.h uses uint32_t without including <stdint.h>.
-    "EXTRA_CFLAGS=-I. -include stdint.h",
+    "EXTRA_CFLAGS=-I. -include stdint.h -include include/gemmini.h",
     "EXTRA_LDFLAGS=",
 ]
 BUILD_TIMEOUT_SECONDS = 600
@@ -45,8 +45,9 @@ def prepare_work_dir(work_dir: str, source_dir: str | None = None) -> None:
     """Seed work_dir with braggnn_exo.py from source_dir (default: the shipped one).
 
     Also copies the C harness (with Gemmini headers and allocators) into
-    work_dir/harness and the Gemmini schedule example into work_dir, so the agent
-    can try the same ELF build; build_elf always uses the shipped copies.
+    work_dir/harness and gemmini.py next to braggnn_exo.py, which imports its
+    instrs from it, so the agent can try the same ELF build; build_elf always
+    uses the shipped copies.
     """
     import exo  # exo-lang, installed in the container
 
@@ -56,7 +57,7 @@ def prepare_work_dir(work_dir: str, source_dir: str | None = None) -> None:
     shutil.copy(SHIPPED_EXO_DIR / "braggnn_exo.py", work / "braggnn_exo.orig.py")
     source = Path(source_dir) if source_dir else SHIPPED_EXO_DIR
     shutil.copy(source / "braggnn_exo.py", work / "braggnn_exo.py")
-    shutil.copy(SHIPPED_EXO_DIR / "schedule_example.py", work / "schedule_example.py")
+    shutil.copy(SHIPPED_EXO_DIR / "gemmini.py", work / "gemmini.py")
     for name in HARNESS_FILES:
         shutil.copy(SHIPPED_EXO_DIR / name, harness / name)
     for name in HARNESS_DIRS:
