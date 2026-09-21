@@ -50,23 +50,31 @@ are how the loop measures you.
 - Do NOT edit braggnn_reference.py. It holds the constants, the generic \
 `*_on_cpu` procs, their per-layer specializations and the composition procs \
 (`nlb_cpu`, `braggnn_inference_cpu`, `braggnn_eval_cpu`); they are the \
-specification your schedule must stay equivalent to. braggnn_lowlevel.py \
+specification your schedule must stay equivalent to. braggnn_schedule_lowlevel.py \
 schedules the same reference with low-level instrs and is read-only too.
 - Do NOT edit gemmini.py. Its @instr definitions pair a scalar body with \
 hand-written Gemmini C that Exo cannot check, so they are the trusted base \
 `replace` proves your schedule against. exocc imports it from beside \
 braggnn_schedule.py, so edits there would reach the build; they are still off \
 limits.
-- Do NOT edit the @proc definitions in braggnn_schedule.py (the *_on_cpu procs, \
-nlb_on_cpu and braggnn_on_cpu) or the constants: they are the algorithm. \
-Everything from `sched_conv` onwards is scheduling code and is yours to \
-rewrite.
-- braggnn_lowlevel.py schedules the same algorithm all the way down to \
+- Schedule only what is inside `braggnn_inference`. The per-layer `sched_*` \
+helpers, their instantiations, `schedule_nlb` and `schedule_braggnn` are \
+yours to rewrite. `schedule_eval` is not: leave it exactly as it is, and do \
+not apply any scheduling operation to `braggnn_eval` itself. The patch loop \
+in `braggnn_eval_cpu` brackets each call with the `rdcycle` extern and writes \
+`cycles[p] = end - begin`, and that is the region the loop measures you on, \
+so nothing may cross those two `rdcycle` calls or leave the `for p` loop. \
+Hoisting per-patch work out of the loop only amortizes it over the test set; \
+it is not a speedup and will be treated as a broken candidate. The weight \
+staging that runs before the loop is there so that buffers the schedule may \
+want to reshape or move to GEMM_SCRATCH are allocations rather than \
+arguments; use it from inside `braggnn_inference`, do not add work to it.
+- braggnn_schedule_lowlevel.py schedules the same algorithm all the way down to \
 Gemmini's low-level instructions instead of the loop macros: every operator \
 but the softmax becomes ld_i8 / matmul_acc_i8 / st_acc_i8 style calls on \
 GEMM_SCRATCH and GEMM_ACCUM tiles. Read it for ideas and copy schedules out of \
 it, but do NOT edit it and do NOT submit it: measured on FireSim it is about \
-12x slower than the loop macros (551k vs 47k cycles), because the CPU issues \
+8x slower than the loop macros (352k vs 45k cycles), because the CPU issues \
 every tile instead of letting the hardware loop unroller do it. It is useful \
 where a macro cannot express what you want. One case is fusion: a low-level \
 operator can leave its result in a GEMM_SCRATCH buffer (`set_memory(p, \
@@ -75,7 +83,7 @@ trip, which the loop macros cannot do because they always mvout to DRAM. Note \
 that Exo refuses any scalar access to a GEMM_SCRATCH buffer, so every read and \
 write of it has to come from an instr.
 - braggnn_schedule.py is the only file that is compiled, measured and scored. \
-Whatever you take from braggnn_lowlevel.py has to end up in braggnn_schedule.py.
+Whatever you take from braggnn_schedule_lowlevel.py has to end up in braggnn_schedule.py.
 
 braggnn_schedule.py already offloads every layer to Gemmini: each `sched_*` \
 function specializes an `*_on_cpu` proc, `replace`s its loop nest with an \
@@ -201,7 +209,7 @@ def build_prompt(
 Working directory in the Exo container: {work_dir}
 - braggnn_schedule.py: the current best version ({best.summary()}). Edit this file; it is the one that gets compiled and measured.
 - braggnn_schedule.orig.py: the original version. Do not edit it.
-- braggnn_lowlevel.py: the same algorithm scheduled down to Gemmini's low-level instructions. Reference only; do not edit it.
+- braggnn_schedule_lowlevel.py: the same algorithm scheduled down to Gemmini's low-level instructions. Reference only; do not edit it.
 
 History of attempts:
 {chr(10).join(history) or "(none yet)"}
