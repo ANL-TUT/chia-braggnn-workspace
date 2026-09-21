@@ -1,6 +1,6 @@
 """LLM-driven optimization loop for the BraggNN Exo kernel.
 
-Each iteration lets OpenCode (Gemini on Vertex AI) edit braggnn_exo.py in the
+Each iteration lets OpenCode (Gemini on Vertex AI) edit braggnn_schedule.py in the
 Exo container through a BashTool, then compiles it with Exo, builds
 braggnn.riscv in the same container and runs it on FireSim.
 A candidate that PASSES with fewer average cycles becomes the new best.
@@ -30,7 +30,7 @@ You are an expert in the Exo user-schedulable language \
 (https://github.com/exo-lang/exo) and in performance tuning of C kernels for \
 RISC-V CPUs.
 
-You optimize braggnn_exo.py, a quantized BraggNN inference kernel. It is \
+You optimize braggnn_schedule.py, a quantized BraggNN inference kernel. It is \
 compiled with `exocc` to C, linked with braggnn_main.c, and run bare-metal on a \
 FireSim Rocket core (RV64GC, no vector extension) with a Gemmini accelerator \
 (RoCC, DIM=16). The fitness metric is the average rdcycle count per inference \
@@ -38,20 +38,30 @@ patch; lower is better.
 
 Hard constraints:
 - The file must stay valid for `exocc` from exo commit defe172.
-- `__all__` must still export `braggnn_inference` with exactly the same \
-arguments, order, types and shapes, because braggnn_main.c calls it.
+- `__all__` must still export `braggnn_eval` with exactly the same \
+arguments, order, types and shapes, because braggnn_main.c calls it. \
+`braggnn_eval` is the scheduled `braggnn_eval_cpu`: it loops over the test \
+patches, times each one with the `rdcycle` extern and inlines \
+`braggnn_inference` into that loop. Keep `braggnn_eval_cpu`, the `rdcycle` \
+calls and the per-patch `cycles[p] = end - begin` exactly as they are; they \
+are how the loop measures you.
 - The average prediction error must stay within 0.5 px (the program prints \
 "*** PASSED ***" only then), so keep the arithmetic semantics.
+- Do NOT edit braggnn_reference.py. It holds the constants, the generic \
+`*_on_cpu` procs, their per-layer specializations and the composition procs \
+(`nlb_cpu`, `braggnn_inference_cpu`, `braggnn_eval_cpu`); they are the \
+specification your schedule must stay equivalent to. braggnn_lowlevel.py \
+schedules the same reference with low-level instrs and is read-only too.
 - Do NOT edit gemmini.py. Its @instr definitions pair a scalar body with \
 hand-written Gemmini C that Exo cannot check, so they are the trusted base \
 `replace` proves your schedule against. exocc imports it from beside \
-braggnn_exo.py, so edits there would reach the build; they are still off \
+braggnn_schedule.py, so edits there would reach the build; they are still off \
 limits.
-- Do NOT edit the @proc definitions in braggnn_exo.py (the *_on_cpu procs, \
+- Do NOT edit the @proc definitions in braggnn_schedule.py (the *_on_cpu procs, \
 nlb_on_cpu and braggnn_on_cpu) or the constants: they are the algorithm. \
 Everything from `sched_conv` onwards is scheduling code and is yours to \
 rewrite.
-- braggnn_exo_lowlevel.py schedules the same algorithm all the way down to \
+- braggnn_lowlevel.py schedules the same algorithm all the way down to \
 Gemmini's low-level instructions instead of the loop macros: every operator \
 but the softmax becomes ld_i8 / matmul_acc_i8 / st_acc_i8 style calls on \
 GEMM_SCRATCH and GEMM_ACCUM tiles. Read it for ideas and copy schedules out of \
@@ -64,18 +74,22 @@ operator can leave its result in a GEMM_SCRATCH buffer (`set_memory(p, \
 trip, which the loop macros cannot do because they always mvout to DRAM. Note \
 that Exo refuses any scalar access to a GEMM_SCRATCH buffer, so every read and \
 write of it has to come from an instr.
-- braggnn_exo.py is the only file that is compiled, measured and scored. \
-Whatever you take from braggnn_exo_lowlevel.py has to end up in braggnn_exo.py.
+- braggnn_schedule.py is the only file that is compiled, measured and scored. \
+Whatever you take from braggnn_lowlevel.py has to end up in braggnn_schedule.py.
 
-braggnn_exo.py already offloads every layer to Gemmini: each `sched_*` \
+braggnn_schedule.py already offloads every layer to Gemmini: each `sched_*` \
 function specializes an `*_on_cpu` proc, `replace`s its loop nest with an \
 instr from gemmini.py and fences once at the end, and `schedule_braggnn` \
-`call_eqv`s those scheduled procs into `braggnn_inference`. Improve on it with Exo \
-scheduling (exo.API_scheduling: inline, reorder_loops, divide_loop, \
-unroll_loop, lift_alloc, bind_expr, stage_mem, call_eqv, simplify, ...), \
-rewriting that scheduling code as freely as you like, and keep \
-`braggnn_inference` bound to the scheduled proc so it is what `exocc` compiles. \
-What is still on the CPU is the input quantization and the NCHW flatten.
+`call_eqv`s those scheduled procs into `braggnn_inference`, which \
+`schedule_eval` then inlines into the per-patch loop of `braggnn_eval`. \
+Improve on it with Exo scheduling (exo.API_scheduling: inline, reorder_loops, \
+divide_loop, unroll_loop, lift_alloc, bind_expr, stage_mem, call_eqv, \
+expand_dim, mult_dim, simplify, ...), rewriting that scheduling code as \
+freely as you like, and keep `braggnn_eval` bound to the scheduled proc so it \
+is what `exocc` compiles. Because the inference body is inlined into the \
+patch loop, every intermediate buffer is an allocation of `braggnn_eval`, so \
+`expand_dim` / `mult_dim` can reshape them there. What is still on the CPU is \
+the input quantization and the NCHW flatten.
 
 Heap allocation is not wanted: the original intermediate buffers are \
 `DRAM_STATIC`. Buffers created by scheduling (stage_mem, bind_expr, \
@@ -106,30 +120,30 @@ any of `unsafe`, `LoopIR` or `_loopir` is rejected without being built.
 How to work:
 - Use only the exo_bash_run_command tool. It runs bash inside the build \
 container (Exo plus the RISC-V cross toolchain), in the working directory \
-that holds braggnn_exo.py. Do not use any other tool.
-- Edit braggnn_exo.py in place there. braggnn_exo.orig.py is the original \
+that holds braggnn_schedule.py. Do not use any other tool.
+- Edit braggnn_schedule.py in place there. braggnn_schedule.orig.py is the original \
 file for reference; do not edit it.
-- Never delete or move the working directory or braggnn_exo.py, and never \
+- Never delete or move the working directory or braggnn_schedule.py, and never \
 delete anything outside the working directory; the tool stops working and \
 your edits are lost if the directory disappears. Put scratch files in \
 subdirectories of the working directory and leave them there.
-- Before finishing, run `exocc braggnn_exo.py -o out --stem braggnn_exo` and fix \
-every error, and check that out/braggnn_exo.h still declares \
-braggnn_inference with the original signature (compile braggnn_exo.orig.py \
+- Before finishing, run `exocc braggnn_schedule.py -o out --stem braggnn_schedule` and fix \
+every error, and check that out/braggnn_schedule.h still declares \
+braggnn_eval with the original signature (compile braggnn_schedule.orig.py \
 into another directory to compare).
 - harness/ holds copies of the C harness (braggnn_main.c, braggnn_data.h, \
 xprintf.c, xprintf.h), the Gemmini headers (include/, rocc-software/) and the \
 Gemmini allocators (gemm_malloc.c, gemm_acc_malloc.c). You may build the \
 bare-metal ELF exactly as the loop does, e.g. `mkdir -p build && cp -r \
-harness/* build/ && cd build && exocc ../braggnn_exo.py -o . --stem braggnn_exo \
+harness/* build/ && cd build && exocc ../braggnn_schedule.py -o . --stem braggnn_schedule \
 && make -f /opt/riscv-harness/Makefile TARGET=verilator PROGRAM=braggnn \
-"SRCS=braggnn_main.c braggnn_exo.c xprintf.c gemm_malloc.c gemm_acc_malloc.c" \
+"SRCS=braggnn_main.c braggnn_schedule.c xprintf.c gemm_malloc.c gemm_acc_malloc.c" \
 "EXTRA_CFLAGS=-I. -include stdint.h -include include/gemmini.h" \
 EXTRA_LDFLAGS=`, and inspect it with \
 riscv64-unknown-elf-objdump. Editing harness/ has no effect: the loop always \
 builds with the original harness.
 - The ELF cannot be run there (no FireSim or spike); the loop builds your \
-final braggnn_exo.py and measures it on FireSim after you reply.
+final braggnn_schedule.py and measures it on FireSim after you reply.
 - Finish with a short explanation of what you changed.
 """
 
@@ -153,7 +167,7 @@ class Evaluation:
 
 
 def evaluate(work_dir: str, best_source: str | None = None) -> tuple[str, Evaluation]:
-    """Build work_dir/braggnn_exo.py and run it on FireSim; returns (source, result)."""
+    """Build work_dir/braggnn_schedule.py and run it on FireSim; returns (source, result)."""
     build = get(build_elf.chia_remote(work_dir))
     source = build["source"]
     forbidden = [word for word in FORBIDDEN_WORDS if word in source]
@@ -164,7 +178,7 @@ def evaluate(work_dir: str, best_source: str | None = None) -> tuple[str, Evalua
         return source, Evaluation(build["stage"], False, None, None, build["log"])
     if source == best_source:
         return source, Evaluation(
-            "llm", False, None, None, "braggnn_exo.py was not modified"
+            "llm", False, None, None, "braggnn_schedule.py was not modified"
         )
 
     result = get(run_workload.chia_remote(elf=build["elf"]))
@@ -185,9 +199,9 @@ def build_prompt(
 ) -> str:
     return f"""\
 Working directory in the Exo container: {work_dir}
-- braggnn_exo.py: the current best version ({best.summary()}). Edit this file; it is the one that gets compiled and measured.
-- braggnn_exo.orig.py: the original version. Do not edit it.
-- braggnn_exo_lowlevel.py: the same algorithm scheduled down to Gemmini's low-level instructions. Reference only; do not edit it.
+- braggnn_schedule.py: the current best version ({best.summary()}). Edit this file; it is the one that gets compiled and measured.
+- braggnn_schedule.orig.py: the original version. Do not edit it.
+- braggnn_lowlevel.py: the same algorithm scheduled down to Gemmini's low-level instructions. Reference only; do not edit it.
 
 History of attempts:
 {chr(10).join(history) or "(none yet)"}
@@ -198,7 +212,7 @@ Log tail:
 {last.log[-LOG_TAIL:]}
 ```
 
-Edit braggnn_exo.py to lower avg_cycles while still PASSING.
+Edit braggnn_schedule.py to lower avg_cycles while still PASSING.
 Keep every existing @proc definition unchanged; only append scheduling code.
 If the previous attempt failed, fix the cause or try a different idea.
 """
@@ -207,7 +221,7 @@ If the previous attempt failed, fix the cause or try a different idea.
 def save(run_dir: Path, source: str | None, evaluation: Evaluation) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     if source:
-        (run_dir / "braggnn_exo.py").write_text(source)
+        (run_dir / "braggnn_schedule.py").write_text(source)
     (run_dir / "log.txt").write_text(evaluation.log)
     fields = {k: v for k, v in asdict(evaluation).items() if k != "log"}
     (run_dir / "result.json").write_text(json.dumps(fields, indent=2))
@@ -261,7 +275,7 @@ def main() -> None:
     print(f"iter 0 (baseline): {best.summary()}", flush=True)
     if not best.passed or best.avg_cycles is None:
         raise SystemExit(best.log[-LOG_TAIL:])
-    (args.out_dir / "best_braggnn_exo.py").write_text(best_source)
+    (args.out_dir / "best_braggnn_schedule.py").write_text(best_source)
 
     history: list[str] = []
     last = best
@@ -303,9 +317,9 @@ def main() -> None:
         print(history[-1], flush=True)
         if improved:
             best_source, best, best_dir = source, last, work_dir
-            (args.out_dir / "best_braggnn_exo.py").write_text(best_source)
+            (args.out_dir / "best_braggnn_schedule.py").write_text(best_source)
 
-    print(f"best: {best.summary()} -> {args.out_dir / 'best_braggnn_exo.py'}")
+    print(f"best: {best.summary()} -> {args.out_dir / 'best_braggnn_schedule.py'}")
 
 
 if __name__ == "__main__":

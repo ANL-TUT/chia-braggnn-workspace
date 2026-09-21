@@ -3,11 +3,38 @@
 from __future__ import annotations
 
 from exo.API_scheduling import rename
+from exo.core.extern import Extern, _EErr
+from exo.core.LoopIR import T
 from exo.libs.externs import relu, select
 from exo.libs.memories import DRAM_STATIC, GEMM_ACCUM, GEMM_SCRATCH
 from exo.platforms.gemmini import acc_scale, clamp
 
 from exo import DRAM, instr
+
+
+class _RdCycle(Extern):
+    def __init__(self):
+        super().__init__("rdcycle")
+
+    def typecheck(self, args):
+        if len(args) != 0:
+            raise _EErr(f"expected 0 arguments, got {len(args)}")
+        return T.i32
+
+    def globl(self, prim_type):
+        return (
+            "static inline int32_t _rdcycle(void) {\n"
+            "  uint64_t c;\n"
+            '  asm volatile("rdcycle %0" : "=r"(c));\n'
+            "  return (int32_t)c;\n"
+            "}\n"
+        )
+
+    def compile(self, args, prim_type):
+        return "_rdcycle()"
+
+
+rdcycle = _RdCycle()
 
 _gemm_fence = "gemmini_fence();"
 
@@ -33,7 +60,8 @@ def ld_acc_i32_bias(
 ):
     assert n <= 16
     assert m <= 16
-    assert stride(dst, 0) == 1
+    assert stride(dst, 0) == 16
+    assert stride(dst, 1) == 1
     assert stride(src, 0) == 1
 
     for i in seq(0, n):

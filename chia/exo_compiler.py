@@ -12,7 +12,6 @@ SHIPPED_EXO_DIR = Path("exo")
 # and the Gemmini headers (include/, rocc-software/).
 HARNESS_FILES = (
     "braggnn_main.c",
-    "braggnn_inference.h",
     "braggnn_data.h",
     "xprintf.c",
     "xprintf.h",
@@ -32,7 +31,7 @@ MAKE_COMMAND = [
     "/opt/riscv-harness/Makefile",
     "TARGET=verilator",
     "PROGRAM=braggnn",
-    "SRCS=braggnn_main.c braggnn_exo.c xprintf.c gemm_malloc.c gemm_acc_malloc.c",
+    "SRCS=braggnn_main.c braggnn_schedule.c xprintf.c gemm_malloc.c gemm_acc_malloc.c",
     # gemm_malloc.h uses uint32_t without including <stdint.h>.
     "EXTRA_CFLAGS=-I. -include stdint.h -include include/gemmini.h",
     "EXTRA_LDFLAGS=",
@@ -42,28 +41,29 @@ BUILD_TIMEOUT_SECONDS = 600
 
 @ChiaFunction(resources={"exo_build": 1})
 def prepare_work_dir(work_dir: str, source_dir: str | None = None) -> None:
-    """Seed work_dir with braggnn_exo.py from source_dir (default: the shipped one).
+    """Seed work_dir with braggnn_schedule.py from source_dir (default: the shipped one).
 
     Also copies the C harness (with Gemmini headers and allocators) into
-    work_dir/harness and gemmini.py next to braggnn_exo.py, which imports its
-    instrs from it, so the agent can try the same ELF build. braggnn_exo_lowlevel.py
-    goes there too, as a read-only reference schedule. build_elf always
-    uses the shipped C harness, but it runs exocc on work_dir/braggnn_exo.py,
-    and exocc puts that file's directory on sys.path, so the gemmini.py the
-    agent sees is the one the build compiles against.
+    work_dir/harness, and next to braggnn_schedule.py puts gemmini.py (the
+    instrs), braggnn_reference.py (the *_on_cpu specs it schedules) and
+    braggnn_lowlevel.py (a read-only reference schedule). build_elf always
+    uses the shipped C harness, but it runs exocc on
+    work_dir/braggnn_schedule.py, and exocc puts that file's directory on
+    sys.path, so the modules the agent sees are the ones the build uses.
     """
     import exo  # exo-lang, installed in the container
 
     work = Path(work_dir)
     harness = work / "harness"
     harness.mkdir(parents=True, exist_ok=True)
-    shutil.copy(SHIPPED_EXO_DIR / "braggnn_exo.py", work / "braggnn_exo.orig.py")
-    source = Path(source_dir) if source_dir else SHIPPED_EXO_DIR
-    shutil.copy(source / "braggnn_exo.py", work / "braggnn_exo.py")
-    shutil.copy(SHIPPED_EXO_DIR / "gemmini.py", work / "gemmini.py")
     shutil.copy(
-        SHIPPED_EXO_DIR / "braggnn_exo_lowlevel.py", work / "braggnn_exo_lowlevel.py"
+        SHIPPED_EXO_DIR / "braggnn_schedule.py", work / "braggnn_schedule.orig.py"
     )
+    source = Path(source_dir) if source_dir else SHIPPED_EXO_DIR
+    shutil.copy(source / "braggnn_schedule.py", work / "braggnn_schedule.py")
+    shutil.copy(SHIPPED_EXO_DIR / "gemmini.py", work / "gemmini.py")
+    shutil.copy(SHIPPED_EXO_DIR / "braggnn_reference.py", work / "braggnn_reference.py")
+    shutil.copy(SHIPPED_EXO_DIR / "braggnn_lowlevel.py", work / "braggnn_lowlevel.py")
     for name in HARNESS_FILES:
         shutil.copy(SHIPPED_EXO_DIR / name, harness / name)
     for name in HARNESS_DIRS:
@@ -74,7 +74,7 @@ def prepare_work_dir(work_dir: str, source_dir: str | None = None) -> None:
 
 @ChiaFunction(resources={"exo_build": 1})
 def build_elf(work_dir: str) -> dict:
-    """Compile work_dir/braggnn_exo.py with Exo and link braggnn.riscv.
+    """Compile work_dir/braggnn_schedule.py with Exo and link braggnn.riscv.
 
     Returns {"source", "elf", "stage", "log"}; "elf" is None on failure.
     Keep everything inside this function and return plain types: workers cannot
@@ -83,14 +83,14 @@ def build_elf(work_dir: str) -> dict:
     """
     import exo  # exo-lang, installed in the container
 
-    source_path = Path(work_dir) / "braggnn_exo.py"
+    source_path = Path(work_dir) / "braggnn_schedule.py"
     if not source_path.exists():
         log = f"{source_path} is missing"
         return {"source": "", "elf": None, "stage": "llm", "log": log}
     source = source_path.read_text()
 
     steps = [
-        ("exo", ["exocc", str(source_path), "-o", ".", "--stem", "braggnn_exo"]),
+        ("exo", ["exocc", str(source_path), "-o", ".", "--stem", "braggnn_schedule"]),
         ("build", MAKE_COMMAND),
     ]
     with tempfile.TemporaryDirectory(prefix="chia-braggnn-build-") as tmp:
