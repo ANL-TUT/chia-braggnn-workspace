@@ -1,4 +1,4 @@
-# ruff: noqa: F811, F821
+# ruff: noqa: F821
 
 from __future__ import annotations
 
@@ -10,22 +10,20 @@ from exo.API_scheduling import (
     replace,
     simplify,
 )
-from exo.libs.externs import expf, relu, select
+from exo.libs.externs import relu, select
 from exo.libs.memories import DRAM_STATIC
 from exo.platforms.gemmini import acc_scale, clamp
 from gemmini import (
     fence,
     make_loop_conv_ws,
-    make_loop_matmul_attention_g,
+    make_loop_matmul,
     make_loop_matmul_fc,
-    make_loop_matmul_theta_phi_tile,
-    make_loop_resadd_relu,
-    make_loop_softmax_tile,
+    make_loop_matmul_trans_b,
+    make_loop_resadd,
+    make_loop_softmax,
 )
 
 from exo import DRAM, proc
-
-__all__ = ["braggnn_inference"]
 
 INPUT_DIM = 11
 CONV1_DIM = 9
@@ -40,186 +38,194 @@ FC3_UNITS = 4
 FC4_UNITS = 2
 OUTPUT_UNITS = 2
 
+NLB_ROW_TILE = 8
 
-def _make_conv2d(in_h, in_w, in_ch, out_ch, kernel_size, out_h, out_w):
-    assert in_h >= out_h + kernel_size - 1
-    assert in_w >= out_w + kernel_size - 1
-
-    @proc
-    def conv2d(
-        input: i8[in_h, in_w, in_ch] @ DRAM,
-        weights: i8[kernel_size, kernel_size, in_ch, out_ch] @ DRAM,
-        bias: i32[out_ch] @ DRAM,
-        output: i8[out_h, out_w, out_ch] @ DRAM,
-        scale: f32 @ DRAM,
-    ):
-        for oh in seq(0, out_h):
-            for ow in seq(0, out_w):
-                for oc in seq(0, out_ch):
-                    sum: i32
-                    sum = bias[oc]
-
-                    for kh in seq(0, kernel_size):
-                        for kw in seq(0, kernel_size):
-                            for ic in seq(0, in_ch):
-                                x: i32
-                                w: i32
-                                x = input[oh + kh, ow + kw, ic]
-                                w = weights[kh, kw, ic, oc]
-                                sum += x * w
-
-                    tmp: f32
-                    acc_scale(sum, tmp, scale)
-                    out_val: i8
-                    clamp(tmp, out_val)
-                    output[oh, ow, oc] = out_val
-
-    return conv2d
+SOFTMAX_INPUT_SCALE = 0.028342675417661667
 
 
-def _make_conv2d_relu(in_h, in_w, in_ch, out_ch, kernel_size, out_h, out_w):
-    assert in_h >= out_h + kernel_size - 1
-    assert in_w >= out_w + kernel_size - 1
-
-    @proc
-    def conv2d_relu(
-        input: i8[in_h, in_w, in_ch] @ DRAM,
-        weights: i8[kernel_size, kernel_size, in_ch, out_ch] @ DRAM,
-        bias: i32[out_ch] @ DRAM,
-        output: i8[out_h, out_w, out_ch] @ DRAM,
-        scale: f32 @ DRAM,
-        relu_scale: f32 @ DRAM,
-    ):
-        for oh in seq(0, out_h):
-            for ow in seq(0, out_w):
-                for oc in seq(0, out_ch):
-                    sum: i32
-                    sum = bias[oc]
-
-                    for kh in seq(0, kernel_size):
-                        for kw in seq(0, kernel_size):
-                            for ic in seq(0, in_ch):
-                                x: i32
-                                w: i32
-                                x = input[oh + kh, ow + kw, ic]
-                                w = weights[kh, kw, ic, oc]
-                                sum += x * w
-
-                    sf: f32
-                    sf = scale * relu_scale
-                    tmp: f32
-                    acc_scale(sum, tmp, sf)
-                    out_val: i8
-                    clamp(tmp, out_val)
-                    out_val = relu(out_val)
-                    output[oh, ow, oc] = out_val
-
-    return conv2d_relu
+def max_softmax_shift(in_scale):
+    qln2 = int(0.693147 / in_scale)
+    qln2_inv = 65536 // qln2
+    return (255 * qln2_inv) // 65536 + 1
 
 
-conv1 = rename(
-    _make_conv2d(INPUT_DIM, INPUT_DIM, 1, CONV1_FILTERS, 3, CONV1_DIM, CONV1_DIM),
-    "conv1",
-)
-conv2 = rename(
-    _make_conv2d_relu(
-        CONV1_DIM, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 3, CONV2_DIM, CONV2_DIM
-    ),
-    "conv2",
-)
-conv3 = rename(
-    _make_conv2d_relu(
-        CONV2_DIM, CONV2_DIM, CONV2_FILTERS, CONV3_FILTERS, 3, CONV3_DIM, CONV3_DIM
-    ),
-    "conv3",
-)
-nlb_qkv_conv = rename(
-    _make_conv2d(
-        CONV1_DIM, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 1, CONV1_DIM, CONV1_DIM
-    ),
-    "nlb_qkv_conv",
-)
-nlb_out_conv = rename(
-    _make_conv2d(
-        CONV1_DIM, CONV1_DIM, CONV2_FILTERS, CONV1_FILTERS, 1, CONV1_DIM, CONV1_DIM
-    ),
-    "nlb_out_conv",
-)
+SOFTMAX_MAX_SHIFT = max_softmax_shift(SOFTMAX_INPUT_SCALE)
 
 
-def _make_fc(d0, d1, d2, out_features):
-    @proc
-    def fc(
-        input: i8[d0, d1, d2] @ DRAM,
-        weights: i8[out_features, d0, d1, d2] @ DRAM,
-        bias: i32[out_features] @ DRAM,
-        output: i8[out_features, 1, 1] @ DRAM,
-        scale: f32 @ DRAM,
-    ):
-        for j in seq(0, out_features):
-            sum: i32
-            sum = bias[j]
-            for k0 in seq(0, d0):
-                for k1 in seq(0, d1):
-                    for k2 in seq(0, d2):
-                        x: i32
-                        w: i32
-                        x = input[k0, k1, k2]
-                        w = weights[j, k0, k1, k2]
-                        sum += x * w
-
-            tmp: f32
-            acc_scale(sum, tmp, scale)
-            out_val: i8
-            clamp(tmp, out_val)
-            output[j, 0, 0] = out_val
-
-    return fc
-
-
-def _make_fc_relu(d0, d1, d2, out_features):
-    @proc
-    def fc_relu(
-        input: i8[d0, d1, d2] @ DRAM,
-        weights: i8[out_features, d0, d1, d2] @ DRAM,
-        bias: i32[out_features] @ DRAM,
-        output: i8[out_features, 1, 1] @ DRAM,
-        scale: f32 @ DRAM,
-        relu_scale: f32 @ DRAM,
-    ):
-        for j in seq(0, out_features):
-            sum: i32
-            sum = bias[j]
-            for k0 in seq(0, d0):
-                for k1 in seq(0, d1):
-                    for k2 in seq(0, d2):
-                        x: i32
-                        w: i32
-                        x = input[k0, k1, k2]
-                        w = weights[j, k0, k1, k2]
-                        sum += x * w
-
-            sf: f32
-            sf = scale * relu_scale
-            tmp: f32
-            acc_scale(sum, tmp, sf)
-            out_val: i8
-            clamp(tmp, out_val)
-            out_val = relu(out_val)
-            output[j, 0, 0] = out_val
-
-    return fc_relu
-
-
-fc1 = rename(_make_fc_relu(CONV3_FILTERS, CONV3_DIM, CONV3_DIM, FC1_UNITS), "fc1")
-fc2 = rename(_make_fc_relu(FC1_UNITS, 1, 1, FC2_UNITS), "fc2")
-fc3 = rename(_make_fc_relu(FC2_UNITS, 1, 1, FC3_UNITS), "fc3")
-fc4 = rename(_make_fc_relu(FC3_UNITS, 1, 1, FC4_UNITS), "fc4")
-fc_output = rename(_make_fc(FC4_UNITS, 1, 1, OUTPUT_UNITS), "fc_output")
+def fence_after(p, pattern):
+    return insert_noop_call(p, p.find(pattern).after(), fence, [])
 
 
 @proc
-def matmul_theta_phi(
+def conv_on_cpu(
+    in_dim: size,
+    in_ch: size,
+    out_ch: size,
+    k: size,
+    out_dim: size,
+    inp: i8[in_dim, in_dim, in_ch] @ DRAM,
+    weights: i8[k, k, in_ch, out_ch] @ DRAM,
+    bias: i32[out_ch] @ DRAM,
+    output: i8[out_dim, out_dim, out_ch] @ DRAM,
+    scale: f32 @ DRAM,
+):
+    assert out_dim == in_dim - k + 1
+
+    for orow in seq(0, out_dim):
+        for ocol in seq(0, out_dim):
+            for och in seq(0, out_ch):
+                res: i32
+                res = bias[och]
+
+                for krow in seq(0, k):
+                    for kcol in seq(0, k):
+                        for kch in seq(0, in_ch):
+                            w_s: i8 @ DRAM
+                            w_s = weights[krow, kcol, kch, och]
+                            i_s: i8 @ DRAM
+                            i_s = inp[orow + krow, ocol + kcol, kch]
+                            a2: i32
+                            b2: i32
+                            a2 = i_s
+                            b2 = w_s
+                            res += a2 * b2
+
+                src_tmp: i32
+                src_tmp = res
+                tmp_res1: f32
+                acc_scale(src_tmp, tmp_res1, scale)
+                tmp_res2: i8
+                clamp(tmp_res1, tmp_res2)
+                output[orow, ocol, och] = tmp_res2
+
+
+@proc
+def conv_relu_on_cpu(
+    in_dim: size,
+    in_ch: size,
+    out_ch: size,
+    k: size,
+    out_dim: size,
+    inp: i8[in_dim, in_dim, in_ch] @ DRAM,
+    weights: i8[k, k, in_ch, out_ch] @ DRAM,
+    bias: i32[out_ch] @ DRAM,
+    output: i8[out_dim, out_dim, out_ch] @ DRAM,
+    scale: f32 @ DRAM,
+    post_scale: f32 @ DRAM,
+):
+    assert out_dim == in_dim - k + 1
+
+    for orow in seq(0, out_dim):
+        for ocol in seq(0, out_dim):
+            for och in seq(0, out_ch):
+                res: i32
+                res = bias[och]
+
+                for krow in seq(0, k):
+                    for kcol in seq(0, k):
+                        for kch in seq(0, in_ch):
+                            w_s: i8 @ DRAM
+                            w_s = weights[krow, kcol, kch, och]
+                            i_s: i8 @ DRAM
+                            i_s = inp[orow + krow, ocol + kcol, kch]
+                            a2: i32
+                            b2: i32
+                            a2 = i_s
+                            b2 = w_s
+                            res += a2 * b2
+
+                tmp_scale: f32
+                tmp_scale = scale * post_scale
+                src_tmp: i32
+                src_tmp = res
+                tmp_res1: f32
+                acc_scale(src_tmp, tmp_res1, tmp_scale)
+                tmp_res2: i8
+                clamp(tmp_res1, tmp_res2)
+                tmp_res2 = relu(tmp_res2)
+                output[orow, ocol, och] = tmp_res2
+
+
+@proc
+def fc_on_cpu(
+    in_ch: size,
+    in_h: size,
+    in_w: size,
+    out_features: size,
+    inp: i8[in_ch, in_h, in_w] @ DRAM,
+    weights: i8[out_features, in_ch, in_h, in_w] @ DRAM,
+    bias: i32[out_features] @ DRAM,
+    output: i8[out_features, 1, 1] @ DRAM,
+    scale: f32 @ DRAM,
+):
+    for j in seq(0, out_features):
+        res: i32
+        res = bias[j]
+        for kch in seq(0, in_ch):
+            for krow in seq(0, in_h):
+                for kcol in seq(0, in_w):
+                    w_s: i8 @ DRAM
+                    w_s = weights[j, kch, krow, kcol]
+                    i_s: i8 @ DRAM
+                    i_s = inp[kch, krow, kcol]
+                    a2: i32
+                    b2: i32
+                    a2 = i_s
+                    b2 = w_s
+                    res += a2 * b2
+
+        src_tmp: i32
+        src_tmp = res
+        tmp_res1: f32
+        acc_scale(src_tmp, tmp_res1, scale)
+        tmp_res2: i8
+        clamp(tmp_res1, tmp_res2)
+        output[j, 0, 0] = tmp_res2
+
+
+@proc
+def fc_relu_on_cpu(
+    in_ch: size,
+    in_h: size,
+    in_w: size,
+    out_features: size,
+    inp: i8[in_ch, in_h, in_w] @ DRAM,
+    weights: i8[out_features, in_ch, in_h, in_w] @ DRAM,
+    bias: i32[out_features] @ DRAM,
+    output: i8[out_features, 1, 1] @ DRAM,
+    scale: f32 @ DRAM,
+    post_scale: f32 @ DRAM,
+):
+    for j in seq(0, out_features):
+        res: i32
+        res = bias[j]
+        for kch in seq(0, in_ch):
+            for krow in seq(0, in_h):
+                for kcol in seq(0, in_w):
+                    w_s: i8 @ DRAM
+                    w_s = weights[j, kch, krow, kcol]
+                    i_s: i8 @ DRAM
+                    i_s = inp[kch, krow, kcol]
+                    a2: i32
+                    b2: i32
+                    a2 = i_s
+                    b2 = w_s
+                    res += a2 * b2
+
+        tmp_scale: f32
+        tmp_scale = scale * post_scale
+        src_tmp: i32
+        src_tmp = res
+        tmp_res1: f32
+        acc_scale(src_tmp, tmp_res1, tmp_scale)
+        tmp_res2: i8
+        clamp(tmp_res1, tmp_res2)
+        tmp_res2 = relu(tmp_res2)
+        output[j, 0, 0] = tmp_res2
+
+
+@proc
+def matmul_trans_b_on_cpu(
     A: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM,
     B: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM,
     C: i8[CONV1_DIM, CONV1_DIM, CONV1_DIM, CONV1_DIM] @ DRAM,
@@ -229,24 +235,30 @@ def matmul_theta_phi(
         for i2 in seq(0, CONV1_DIM):
             for j1 in seq(0, CONV1_DIM):
                 for j2 in seq(0, CONV1_DIM):
-                    sum: i32
-                    sum = 0
+                    res: i32
+                    res = 0
                     for k in seq(0, CONV2_FILTERS):
-                        a: i32
-                        b: i32
+                        a: i8 @ DRAM
                         a = A[i1, i2, k]
+                        b: i8 @ DRAM
                         b = B[j1, j2, k]
-                        sum += a * b
+                        a2: i32
+                        b2: i32
+                        a2 = a
+                        b2 = b
+                        res += a2 * b2
 
-                    tmp: f32
-                    acc_scale(sum, tmp, scale)
-                    out_val: i8
-                    clamp(tmp, out_val)
-                    C[i1, i2, j1, j2] = out_val
+                    src_tmp: i32
+                    src_tmp = res
+                    tmp_res1: f32
+                    acc_scale(src_tmp, tmp_res1, scale)
+                    tmp_res2: i8
+                    clamp(tmp_res1, tmp_res2)
+                    C[i1, i2, j1, j2] = tmp_res2
 
 
 @proc
-def matmul_attention_g(
+def matmul_on_cpu(
     A: i8[CONV1_DIM, CONV1_DIM, CONV1_DIM, CONV1_DIM] @ DRAM,
     B: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM,
     C: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM,
@@ -255,25 +267,31 @@ def matmul_attention_g(
     for i1 in seq(0, CONV1_DIM):
         for i2 in seq(0, CONV1_DIM):
             for j in seq(0, CONV2_FILTERS):
-                sum: i32
-                sum = 0
+                res: i32
+                res = 0
                 for k1 in seq(0, CONV1_DIM):
                     for k2 in seq(0, CONV1_DIM):
-                        a: i32
-                        b: i32
+                        a: i8 @ DRAM
                         a = A[i1, i2, k1, k2]
+                        b: i8 @ DRAM
                         b = B[k1, k2, j]
-                        sum += a * b
+                        a2: i32
+                        b2: i32
+                        a2 = a
+                        b2 = b
+                        res += a2 * b2
 
-                tmp: f32
-                acc_scale(sum, tmp, scale)
-                out_val: i8
-                clamp(tmp, out_val)
-                C[i1, i2, j] = out_val
+                src_tmp: i32
+                src_tmp = res
+                tmp_res1: f32
+                acc_scale(src_tmp, tmp_res1, scale)
+                tmp_res2: i8
+                clamp(tmp_res1, tmp_res2)
+                C[i1, i2, j] = tmp_res2
 
 
 @proc
-def nlb_softmax(
+def softmax_on_cpu(
     A: i8[CONV1_DIM, CONV1_DIM, CONV1_DIM, CONV1_DIM] @ DRAM,
     C: i8[CONV1_DIM, CONV1_DIM, CONV1_DIM, CONV1_DIM] @ DRAM,
     in_scale: f32 @ DRAM,
@@ -281,37 +299,85 @@ def nlb_softmax(
 ):
     for i1 in seq(0, CONV1_DIM):
         for i2 in seq(0, CONV1_DIM):
-            buf: f32[CONV1_DIM, CONV1_DIM] @ DRAM_STATIC
-            max_q: f32
+            two16: i32
+            two16 = 65536
+            qln2: i32
+            qln2_f: f32
+            qln2_f = 0.693147 / in_scale
+            qln2 = qln2_f
+            qln2_inv: i32
+            qln2_inv = two16 / qln2
+            qb: i32
+            qb_f: f32
+            qb_f = 1.353 / in_scale
+            qb = qb_f
+            qc: i32
+            qc_f: f32
+            qc_f = 0.344 / (0.3585 * in_scale * in_scale)
+            qc = qc_f
+
+            max_q: i32
             max_q = A[i1, i2, 0, 0]
             for j1 in seq(0, CONV1_DIM):
                 for j2 in seq(0, CONV1_DIM):
-                    v: f32
-                    v = A[i1, i2, j1, j2]
-                    max_q = select(max_q, v, v, max_q)
+                    a2: i32
+                    a2 = A[i1, i2, j1, j2]
+                    max_q = select(max_q, a2, a2, max_q)
 
-            sum_exp: f32
-            sum_exp = 0.0
+            exp_buf: i32[CONV1_DIM, CONV1_DIM] @ DRAM_STATIC
+            sum_exp: i32
+            sum_exp = 0
             for j1 in seq(0, CONV1_DIM):
                 for j2 in seq(0, CONV1_DIM):
-                    av: f32
-                    e: f32
-                    av = A[i1, i2, j1, j2]
-                    e = expf(in_scale * (av - max_q))
-                    buf[j1, j2] = e
-                    sum_exp += e
+                    a2: i32
+                    a2 = A[i1, i2, j1, j2]
+                    neg_q: i32
+                    neg_q = max_q - a2
+                    z: i32
+                    z = neg_q * qln2_inv / two16
+                    qp: i32
+                    qp = z * qln2 - neg_q
+                    qpb: i32
+                    qpb = qp + qb
+                    q_exp: i32
+                    q_exp = qpb * qpb + qc
 
+                    zero: i32
+                    zero = 0
+                    shifts_left: i32
+                    shifts_left = z
+                    for s in seq(0, SOFTMAX_MAX_SHIFT):
+                        halved: i32
+                        halved = q_exp / 2
+                        q_exp = select(zero, shifts_left, halved, q_exp)
+                        next_left: i32
+                        next_left = shifts_left - 1
+                        shifts_left = select(zero, shifts_left, next_left, shifts_left)
+
+                    exp_buf[j1, j2] = q_exp
+                    sum_exp += q_exp
+
+            denom: f32
+            denom = sum_exp
+            factor: f32
+            factor = 127.0 / denom
+            out_factor: f32
+            out_factor = 1.0 / (127.0 * out_scale)
+            tmp_scale: f32
+            tmp_scale = factor * out_factor
             for j1 in seq(0, CONV1_DIM):
                 for j2 in seq(0, CONV1_DIM):
-                    tmp: f32
-                    out_val: i8
-                    tmp = buf[j1, j2] / sum_exp / out_scale
-                    clamp(tmp, out_val)
-                    C[i1, i2, j1, j2] = out_val
+                    src_tmp: i32
+                    src_tmp = exp_buf[j1, j2]
+                    tmp_res1: f32
+                    acc_scale(src_tmp, tmp_res1, tmp_scale)
+                    tmp_res2: i8
+                    clamp(tmp_res1, tmp_res2)
+                    C[i1, i2, j1, j2] = tmp_res2
 
 
 @proc
-def resadd_relu(
+def resadd_on_cpu(
     A_scale: f32 @ DRAM,
     B_scale: f32 @ DRAM,
     C_scale: f32 @ DRAM,
@@ -322,37 +388,148 @@ def resadd_relu(
     for i1 in seq(0, CONV1_DIM):
         for i2 in seq(0, CONV1_DIM):
             for j in seq(0, CONV1_FILTERS):
-                a: i32
-                atmp: f32
-                a8: i8
-                ai: i32
-                a = A[i1, i2, j]
-                acc_scale(a, atmp, A_scale)
-                clamp(atmp, a8)
-                ai = a8
+                a_src: i32
+                a_tmp: f32
+                a_q: i8
+                a2: i32
+                a_src = A[i1, i2, j]
+                acc_scale(a_src, a_tmp, A_scale)
+                clamp(a_tmp, a_q)
+                a2 = a_q
 
-                b: i32
-                btmp: f32
-                b8: i8
-                bi: i32
-                b = B[i1, i2, j]
-                acc_scale(b, btmp, B_scale)
-                clamp(btmp, b8)
-                bi = b8
+                b_src: i32
+                b_tmp: f32
+                b_q: i8
+                b2: i32
+                b_src = B[i1, i2, j]
+                acc_scale(b_src, b_tmp, B_scale)
+                clamp(b_tmp, b_q)
+                b2 = b_q
 
-                si: i32
-                ctmp: f32
-                out_val: i8
-                si = ai + bi
-                acc_scale(si, ctmp, C_scale)
-                clamp(ctmp, out_val)
-                out_val = relu(out_val)
-                C[i1, i2, j] = out_val
+                res: i32
+                src_tmp: i32
+                tmp_res1: f32
+                tmp_res2: i8
+                res = a2 + b2
+                src_tmp = res
+                acc_scale(src_tmp, tmp_res1, C_scale)
+                clamp(tmp_res1, tmp_res2)
+                tmp_res2 = relu(tmp_res2)
+                C[i1, i2, j] = tmp_res2
+
+
+def sched_conv(name, in_dim, in_ch, out_ch, k, act=False):
+    out_dim = in_dim - k + 1
+
+    cpu = rename(conv_relu_on_cpu if act else conv_on_cpu, f"{name}_cpu")
+    cpu = cpu.partial_eval(in_dim, in_ch, out_ch, k, out_dim)
+
+    do_conv = make_loop_conv_ws(f"do_{name}", in_dim, in_ch, out_ch, k, act)
+
+    gemmini = rename(cpu, name)
+    gemmini = replace(gemmini, "for orow in _:_", do_conv)
+    gemmini = fence_after(gemmini, f"do_{name}(_)")
+
+    return gemmini, cpu
+
+
+def sched_fc(name, in_ch, in_h, in_w, out_features, act=False):
+    cpu = rename(fc_relu_on_cpu if act else fc_on_cpu, f"{name}_cpu")
+    cpu = cpu.partial_eval(in_ch, in_h, in_w, out_features)
+
+    do_fc = make_loop_matmul_fc(f"do_{name}", in_ch, in_h, in_w, out_features, act)
+
+    gemmini = rename(cpu, name)
+    gemmini = replace(gemmini, "for j in _:_", do_fc)
+    gemmini = fence_after(gemmini, f"do_{name}(_)")
+
+    return gemmini, cpu
+
+
+def sched_matmul_trans_b(name):
+    cpu = rename(matmul_trans_b_on_cpu, f"{name}_cpu")
+
+    do_matmul = make_loop_matmul_trans_b(f"do_{name}", CONV2_FILTERS, CONV1_DIM)
+
+    # 81 rows of theta cut into 72 + 9
+    gemmini = rename(cpu, name)
+    gemmini = divide_loop(gemmini, "i1", NLB_ROW_TILE, ["i1_o", "i1_i"], tail="cut")
+    gemmini = simplify(gemmini)
+    gemmini = replace(gemmini, "for i1_i in _:_", do_matmul)
+    gemmini = replace(gemmini, gemmini.find_loop("i1_o").next(), do_matmul)
+    gemmini = fence_after(gemmini, f"do_{name}(_) #1")
+
+    return gemmini, cpu
+
+
+def sched_softmax(name):
+    cpu = rename(softmax_on_cpu, f"{name}_cpu")
+
+    do_softmax = make_loop_softmax(f"do_{name}", CONV1_DIM, SOFTMAX_MAX_SHIFT)
+
+    gemmini = rename(cpu, name)
+    gemmini = divide_loop(gemmini, "i1", NLB_ROW_TILE, ["i1_o", "i1_i"], tail="cut")
+    gemmini = simplify(gemmini)
+    gemmini = replace(gemmini, "for i1_i in _:_", do_softmax)
+    gemmini = replace(gemmini, gemmini.find_loop("i1_o").next(), do_softmax)
+    gemmini = fence_after(gemmini, f"do_{name}(_) #1")
+
+    return gemmini, cpu
+
+
+def sched_matmul(name):
+    cpu = rename(matmul_on_cpu, f"{name}_cpu")
+
+    do_matmul = make_loop_matmul(f"do_{name}", CONV2_FILTERS, CONV1_DIM)
+
+    gemmini = rename(cpu, name)
+    gemmini = replace(gemmini, "for i1 in _:_", do_matmul)
+    gemmini = fence_after(gemmini, f"do_{name}(_)")
+
+    return gemmini, cpu
+
+
+def sched_resadd(name):
+    cpu = rename(resadd_on_cpu, f"{name}_cpu")
+
+    do_resadd = make_loop_resadd(f"do_{name}", CONV1_DIM, CONV1_FILTERS)
+
+    gemmini = rename(cpu, name)
+    gemmini = replace(gemmini, "for i1 in _:_", do_resadd)
+    gemmini = fence_after(gemmini, f"do_{name}(_)")
+
+    return gemmini, cpu
+
+
+conv1, conv1_cpu = sched_conv("conv1", INPUT_DIM, 1, CONV1_FILTERS, 3)
+conv2, conv2_cpu = sched_conv(
+    "conv2", CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 3, act=True
+)
+conv3, conv3_cpu = sched_conv(
+    "conv3", CONV2_DIM, CONV2_FILTERS, CONV3_FILTERS, 3, act=True
+)
+nlb_qkv_conv, nlb_qkv_conv_cpu = sched_conv(
+    "nlb_qkv_conv", CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 1
+)
+nlb_out_conv, nlb_out_conv_cpu = sched_conv(
+    "nlb_out_conv", CONV1_DIM, CONV2_FILTERS, CONV1_FILTERS, 1
+)
+
+fc1, fc1_cpu = sched_fc("fc1", CONV3_FILTERS, CONV3_DIM, CONV3_DIM, FC1_UNITS, act=True)
+fc2, fc2_cpu = sched_fc("fc2", FC1_UNITS, 1, 1, FC2_UNITS, act=True)
+fc3, fc3_cpu = sched_fc("fc3", FC2_UNITS, 1, 1, FC3_UNITS, act=True)
+fc4, fc4_cpu = sched_fc("fc4", FC3_UNITS, 1, 1, FC4_UNITS, act=True)
+fc_output, fc_output_cpu = sched_fc("fc_output", FC4_UNITS, 1, 1, OUTPUT_UNITS)
+
+matmul_theta_phi, matmul_theta_phi_cpu = sched_matmul_trans_b("matmul_theta_phi")
+nlb_softmax, nlb_softmax_cpu = sched_softmax("nlb_softmax")
+matmul_attention_g, matmul_attention_g_cpu = sched_matmul("matmul_attention_g")
+resadd_relu, resadd_relu_cpu = sched_resadd("resadd_relu")
 
 
 @proc
-def nlb(
-    input: i8[CONV1_DIM, CONV1_DIM, CONV1_FILTERS] @ DRAM,
+def nlb_cpu(
+    inp: i8[CONV1_DIM, CONV1_DIM, CONV1_FILTERS] @ DRAM,
     nlb_theta_weights: i8[1, 1, CONV1_FILTERS, CONV2_FILTERS] @ DRAM,
     nlb_theta_bias: i32[CONV2_FILTERS] @ DRAM,
     nlb_theta_scale: f32 @ DRAM,
@@ -371,41 +548,45 @@ def nlb(
     nlb_out_scale: f32 @ DRAM,
     nlb_add_a_scale: f32 @ DRAM,
     nlb_add_b_scale: f32 @ DRAM,
-    leaky1_scale: f32 @ DRAM,
+    resadd_post_scale: f32 @ DRAM,
     output: i8[CONV1_DIM, CONV1_DIM, CONV1_FILTERS] @ DRAM,
 ):
     nlb_theta_out: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM_STATIC
-    nlb_qkv_conv(
-        input, nlb_theta_weights, nlb_theta_bias, nlb_theta_out, nlb_theta_scale
+    nlb_qkv_conv_cpu(
+        inp, nlb_theta_weights, nlb_theta_bias, nlb_theta_out, nlb_theta_scale
     )
 
     nlb_phi_out: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM_STATIC
-    nlb_qkv_conv(input, nlb_phi_weights, nlb_phi_bias, nlb_phi_out, nlb_phi_scale)
+    nlb_qkv_conv_cpu(inp, nlb_phi_weights, nlb_phi_bias, nlb_phi_out, nlb_phi_scale)
 
     nlb_g_out: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM_STATIC
-    nlb_qkv_conv(input, nlb_g_weights, nlb_g_bias, nlb_g_out, nlb_g_scale)
+    nlb_qkv_conv_cpu(inp, nlb_g_weights, nlb_g_bias, nlb_g_out, nlb_g_scale)
 
     attention_raw: i8[CONV1_DIM, CONV1_DIM, CONV1_DIM, CONV1_DIM] @ DRAM_STATIC
-    matmul_theta_phi(nlb_theta_out, nlb_phi_out, attention_raw, nlb_matmul_scale)
+    matmul_theta_phi_cpu(nlb_theta_out, nlb_phi_out, attention_raw, nlb_matmul_scale)
 
     attention_out: i8[CONV1_DIM, CONV1_DIM, CONV1_DIM, CONV1_DIM] @ DRAM_STATIC
-    nlb_softmax(attention_raw, attention_out, softmax_input_scale, softmax_output_scale)
+    nlb_softmax_cpu(
+        attention_raw, attention_out, softmax_input_scale, softmax_output_scale
+    )
 
     attended_output: i8[CONV1_DIM, CONV1_DIM, CONV2_FILTERS] @ DRAM_STATIC
-    matmul_attention_g(attention_out, nlb_g_out, attended_output, nlb_matmul_1_scale)
+    matmul_attention_g_cpu(
+        attention_out, nlb_g_out, attended_output, nlb_matmul_1_scale
+    )
 
     nlb_output: i8[CONV1_DIM, CONV1_DIM, CONV1_FILTERS] @ DRAM_STATIC
-    nlb_out_conv(
+    nlb_out_conv_cpu(
         attended_output, nlb_out_weights, nlb_out_bias, nlb_output, nlb_out_scale
     )
 
-    resadd_relu(
-        nlb_add_b_scale, nlb_add_a_scale, leaky1_scale, input, nlb_output, output
+    resadd_relu_cpu(
+        nlb_add_b_scale, nlb_add_a_scale, resadd_post_scale, inp, nlb_output, output
     )
 
 
 @proc
-def braggnn_inference(
+def braggnn_inference_cpu(
     fp32_input: f32[INPUT_DIM, INPUT_DIM, 1] @ DRAM,
     conv1_weights: i8[3, 3, 1, CONV1_FILTERS] @ DRAM,
     conv1_bias: i32[CONV1_FILTERS] @ DRAM,
@@ -428,48 +609,48 @@ def braggnn_inference(
     nlb_out_scale: f32 @ DRAM,
     nlb_add_a_scale: f32 @ DRAM,
     nlb_add_b_scale: f32 @ DRAM,
-    leaky1_scale: f32 @ DRAM,
+    resadd_post_scale: f32 @ DRAM,
     conv2_weights: i8[3, 3, CONV1_FILTERS, CONV2_FILTERS] @ DRAM,
     conv2_bias: i32[CONV2_FILTERS] @ DRAM,
     conv2_scale: f32 @ DRAM,
-    leaky3_scale: f32 @ DRAM,
+    conv2_post_scale: f32 @ DRAM,
     conv3_weights: i8[3, 3, CONV2_FILTERS, CONV3_FILTERS] @ DRAM,
     conv3_bias: i32[CONV3_FILTERS] @ DRAM,
     conv3_scale: f32 @ DRAM,
-    leaky5_scale: f32 @ DRAM,
+    conv3_post_scale: f32 @ DRAM,
     fc1_weights: i8[FC1_UNITS, CONV3_FILTERS, CONV3_DIM, CONV3_DIM] @ DRAM,
     fc1_bias: i32[FC1_UNITS] @ DRAM,
     fc1_scale: f32 @ DRAM,
-    dense1_leaky_scale: f32 @ DRAM,
+    fc1_post_scale: f32 @ DRAM,
     fc2_weights: i8[FC2_UNITS, FC1_UNITS, 1, 1] @ DRAM,
     fc2_bias: i32[FC2_UNITS] @ DRAM,
     fc2_scale: f32 @ DRAM,
-    dense3_leaky_scale: f32 @ DRAM,
+    fc2_post_scale: f32 @ DRAM,
     fc3_weights: i8[FC3_UNITS, FC2_UNITS, 1, 1] @ DRAM,
     fc3_bias: i32[FC3_UNITS] @ DRAM,
     fc3_scale: f32 @ DRAM,
-    dense5_leaky_scale: f32 @ DRAM,
+    fc3_post_scale: f32 @ DRAM,
     fc4_weights: i8[FC4_UNITS, FC3_UNITS, 1, 1] @ DRAM,
     fc4_bias: i32[FC4_UNITS] @ DRAM,
     fc4_scale: f32 @ DRAM,
-    dense7_leaky_scale: f32 @ DRAM,
+    fc4_post_scale: f32 @ DRAM,
     output_weights: i8[OUTPUT_UNITS, FC4_UNITS, 1, 1] @ DRAM,
     output_bias: i32[OUTPUT_UNITS] @ DRAM,
     output_scale: f32 @ DRAM,
     output: i8[OUTPUT_UNITS, 1, 1] @ DRAM,
 ):
-    input: i8[INPUT_DIM, INPUT_DIM, 1] @ DRAM_STATIC
+    inp: i8[INPUT_DIM, INPUT_DIM, 1] @ DRAM_STATIC
     for h in seq(0, INPUT_DIM):
         for w in seq(0, INPUT_DIM):
             q: f32
             q = fp32_input[h, w, 0] * 127.0
-            input[h, w, 0] = q
+            inp[h, w, 0] = q
 
     conv1_out: i8[CONV1_DIM, CONV1_DIM, CONV1_FILTERS] @ DRAM_STATIC
-    conv1(input, conv1_weights, conv1_bias, conv1_out, conv1_scale)
+    conv1_cpu(inp, conv1_weights, conv1_bias, conv1_out, conv1_scale)
 
     nlb_out: i8[CONV1_DIM, CONV1_DIM, CONV1_FILTERS] @ DRAM_STATIC
-    nlb(
+    nlb_cpu(
         conv1_out,
         nlb_theta_weights,
         nlb_theta_bias,
@@ -489,15 +670,19 @@ def braggnn_inference(
         nlb_out_scale,
         nlb_add_a_scale,
         nlb_add_b_scale,
-        leaky1_scale,
+        resadd_post_scale,
         nlb_out,
     )
 
     conv2_out: i8[CONV2_DIM, CONV2_DIM, CONV2_FILTERS] @ DRAM_STATIC
-    conv2(nlb_out, conv2_weights, conv2_bias, conv2_out, conv2_scale, leaky3_scale)
+    conv2_cpu(
+        nlb_out, conv2_weights, conv2_bias, conv2_out, conv2_scale, conv2_post_scale
+    )
 
     conv3_out: i8[CONV3_DIM, CONV3_DIM, CONV3_FILTERS] @ DRAM_STATIC
-    conv3(conv2_out, conv3_weights, conv3_bias, conv3_out, conv3_scale, leaky5_scale)
+    conv3_cpu(
+        conv2_out, conv3_weights, conv3_bias, conv3_out, conv3_scale, conv3_post_scale
+    )
 
     flattened: i8[CONV3_FILTERS, CONV3_DIM, CONV3_DIM] @ DRAM_STATIC
     for ch in seq(0, CONV3_FILTERS):
@@ -506,157 +691,50 @@ def braggnn_inference(
                 flattened[ch, r, c] = conv3_out[r, c, ch]
 
     fc1_out: i8[FC1_UNITS, 1, 1] @ DRAM_STATIC
-    fc1(flattened, fc1_weights, fc1_bias, fc1_out, fc1_scale, dense1_leaky_scale)
+    fc1_cpu(flattened, fc1_weights, fc1_bias, fc1_out, fc1_scale, fc1_post_scale)
 
     fc2_out: i8[FC2_UNITS, 1, 1] @ DRAM_STATIC
-    fc2(fc1_out, fc2_weights, fc2_bias, fc2_out, fc2_scale, dense3_leaky_scale)
+    fc2_cpu(fc1_out, fc2_weights, fc2_bias, fc2_out, fc2_scale, fc2_post_scale)
 
     fc3_out: i8[FC3_UNITS, 1, 1] @ DRAM_STATIC
-    fc3(fc2_out, fc3_weights, fc3_bias, fc3_out, fc3_scale, dense5_leaky_scale)
+    fc3_cpu(fc2_out, fc3_weights, fc3_bias, fc3_out, fc3_scale, fc3_post_scale)
 
     fc4_out: i8[FC4_UNITS, 1, 1] @ DRAM_STATIC
-    fc4(fc3_out, fc4_weights, fc4_bias, fc4_out, fc4_scale, dense7_leaky_scale)
+    fc4_cpu(fc3_out, fc4_weights, fc4_bias, fc4_out, fc4_scale, fc4_post_scale)
 
-    fc_output(fc4_out, output_weights, output_bias, output, output_scale)
-
-
-def _swap_all(p, old, new):
-    for _ in range(len(p.find_all(f"{old}(_)"))):
-        p = call_eqv(p, f"{old}(_)", new)
-    return p
+    fc_output_cpu(fc4_out, output_weights, output_bias, output, output_scale)
 
 
-def _conv(p, do, name):
-    return rename(replace(p, p.find_loop("oh"), do), name)
+def schedule_nlb():
+    gemmini = rename(nlb_cpu, "nlb")
+    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
+    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
+    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
+    gemmini = call_eqv(gemmini, "matmul_theta_phi_cpu(_)", matmul_theta_phi)
+    gemmini = call_eqv(gemmini, "nlb_softmax_cpu(_)", nlb_softmax)
+    gemmini = call_eqv(gemmini, "matmul_attention_g_cpu(_)", matmul_attention_g)
+    gemmini = call_eqv(gemmini, "nlb_out_conv_cpu(_)", nlb_out_conv)
+    gemmini = call_eqv(gemmini, "resadd_relu_cpu(_)", resadd_relu)
+    return gemmini
 
 
-_do_conv1 = make_loop_conv_ws("do_conv1", INPUT_DIM, 1, CONV1_FILTERS, 3)
-_do_conv2 = make_loop_conv_ws(
-    "do_conv2", CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 3, relu_act=True
-)
-_do_conv3 = make_loop_conv_ws(
-    "do_conv3", CONV2_DIM, CONV2_FILTERS, CONV3_FILTERS, 3, relu_act=True
-)
-_do_qkv_conv = make_loop_conv_ws(
-    "do_qkv_conv", CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 1
-)
-_do_out_conv = make_loop_conv_ws(
-    "do_out_conv", CONV1_DIM, CONV2_FILTERS, CONV1_FILTERS, 1
-)
-
-conv1_gemm = _conv(conv1, _do_conv1, "conv1_gemm")
-conv2_gemm = _conv(conv2, _do_conv2, "conv2_gemm")
-conv3_gemm = _conv(conv3, _do_conv3, "conv3_gemm")
-nlb_qkv_conv_gemm = _conv(nlb_qkv_conv, _do_qkv_conv, "nlb_qkv_conv_gemm")
-nlb_out_conv_gemm = _conv(nlb_out_conv, _do_out_conv, "nlb_out_conv_gemm")
+nlb = schedule_nlb()
 
 
-def _fc(p, do, name):
-    return rename(replace(p, p.find_loop("j"), do), name)
+def schedule_braggnn():
+    gemmini = rename(braggnn_inference_cpu, "braggnn_inference")
+    gemmini = call_eqv(gemmini, "conv1_cpu(_)", conv1)
+    gemmini = call_eqv(gemmini, "nlb_cpu(_)", nlb)
+    gemmini = call_eqv(gemmini, "conv2_cpu(_)", conv2)
+    gemmini = call_eqv(gemmini, "conv3_cpu(_)", conv3)
+    gemmini = call_eqv(gemmini, "fc1_cpu(_)", fc1)
+    gemmini = call_eqv(gemmini, "fc2_cpu(_)", fc2)
+    gemmini = call_eqv(gemmini, "fc3_cpu(_)", fc3)
+    gemmini = call_eqv(gemmini, "fc4_cpu(_)", fc4)
+    gemmini = call_eqv(gemmini, "fc_output_cpu(_)", fc_output)
+    return gemmini
 
 
-_do_fc1 = make_loop_matmul_fc(
-    "do_fc1", CONV3_FILTERS, CONV3_DIM, CONV3_DIM, FC1_UNITS, relu_act=True
-)
-_do_fc2 = make_loop_matmul_fc("do_fc2", FC1_UNITS, 1, 1, FC2_UNITS, relu_act=True)
-_do_fc3 = make_loop_matmul_fc("do_fc3", FC2_UNITS, 1, 1, FC3_UNITS, relu_act=True)
-_do_fc4 = make_loop_matmul_fc("do_fc4", FC3_UNITS, 1, 1, FC4_UNITS, relu_act=True)
-_do_fc_output = make_loop_matmul_fc("do_fc_output", FC4_UNITS, 1, 1, OUTPUT_UNITS)
+braggnn_inference = schedule_braggnn()
 
-fc1_gemm = _fc(fc1, _do_fc1, "fc1_gemm")
-fc2_gemm = _fc(fc2, _do_fc2, "fc2_gemm")
-fc3_gemm = _fc(fc3, _do_fc3, "fc3_gemm")
-fc4_gemm = _fc(fc4, _do_fc4, "fc4_gemm")
-fc_output_gemm = _fc(fc_output, _do_fc_output, "fc_output_gemm")
-
-
-_do_theta_phi = make_loop_matmul_theta_phi_tile(
-    "do_theta_phi", CONV2_FILTERS, CONV1_DIM
-)
-
-
-def _theta_phi(p):
-    p = divide_loop(p, p.find_loop("i1"), 8, ["i1o", "i1i"], tail="cut")
-    p = simplify(p)
-    p = replace(p, p.find_loop("i1o").body(), _do_theta_phi)
-    p = replace(p, p.find_loop("i1o").next(), _do_theta_phi)
-    p = insert_noop_call(p, p.find_loop("i1o").next().after(), fence, [])
-    return rename(p, "matmul_theta_phi_gemm")
-
-
-matmul_theta_phi_gemm = _theta_phi(matmul_theta_phi)
-
-
-_do_softmax = make_loop_softmax_tile("do_softmax", CONV1_DIM)
-
-
-def _softmax(p):
-    p = divide_loop(p, p.find_loop("i1"), 8, ["i1o", "i1i"], tail="cut")
-    p = simplify(p)
-    p = replace(p, p.find_loop("i1o").body(), _do_softmax)
-    p = replace(p, p.find_loop("i1o").next(), _do_softmax)
-    p = insert_noop_call(p, p.find_loop("i1o").next().after(), fence, [])
-    return rename(p, "nlb_softmax_gemm")
-
-
-nlb_softmax_gemm = _softmax(nlb_softmax)
-
-
-_do_attention_g = make_loop_matmul_attention_g(
-    "do_attention_g", CONV2_FILTERS, CONV1_DIM
-)
-
-
-def _attention_g(p):
-    p = replace(p, p.find_loop("i1"), _do_attention_g)
-    return rename(p, "matmul_attention_g_gemm")
-
-
-matmul_attention_g_gemm = _attention_g(matmul_attention_g)
-
-
-_do_resadd = make_loop_resadd_relu("do_resadd", CONV1_DIM, CONV1_FILTERS)
-
-
-def _resadd(p):
-    p = replace(p, p.find_loop("i1"), _do_resadd)
-    return rename(p, "resadd_relu_gemm")
-
-
-resadd_relu_gemm = _resadd(resadd_relu)
-
-
-def _nlb_gemm():
-    p = nlb
-    for old, new in (
-        ("nlb_qkv_conv", nlb_qkv_conv_gemm),
-        ("matmul_theta_phi", matmul_theta_phi_gemm),
-        ("nlb_softmax", nlb_softmax_gemm),
-        ("matmul_attention_g", matmul_attention_g_gemm),
-        ("nlb_out_conv", nlb_out_conv_gemm),
-        ("resadd_relu", resadd_relu_gemm),
-    ):
-        p = _swap_all(p, old, new)
-    return rename(p, "nlb_gemm")
-
-
-nlb_gemm = _nlb_gemm()
-
-
-def _inference_gemm():
-    p = call_eqv(braggnn_inference, "nlb(_)", nlb_gemm)
-    for old, new in (
-        ("conv1", conv1_gemm),
-        ("conv2", conv2_gemm),
-        ("conv3", conv3_gemm),
-        ("fc1", fc1_gemm),
-        ("fc2", fc2_gemm),
-        ("fc3", fc3_gemm),
-        ("fc4", fc4_gemm),
-        ("fc_output", fc_output_gemm),
-    ):
-        p = _swap_all(p, old, new)
-    return rename(p, "braggnn_inference")
-
-
-braggnn_inference = _inference_gemm()
+__all__ = ["braggnn_inference"]

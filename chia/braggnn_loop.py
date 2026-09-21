@@ -42,16 +42,35 @@ Hard constraints:
 arguments, order, types and shapes, because braggnn_main.c calls it.
 - The average prediction error must stay within 0.5 px (the program prints \
 "*** PASSED ***" only then), so keep the arithmetic semantics.
-- Do NOT edit any existing @proc definition in braggnn_exo.py: leave every \
-@proc body and signature, the _make_* factories that build them, and the \
-constants exactly as they are: they are the specification `replace` checks a \
-Gemmini instr against. The scheduling code after them is yours to rewrite.
-- Do NOT edit gemmini.py, whose instrs carry hand-written C that Exo does not \
-check; build_elf uses the shipped copy either way.
+- Do NOT edit gemmini.py. Its @instr definitions pair a scalar body with \
+hand-written Gemmini C that Exo cannot check, so they are the trusted base \
+`replace` proves your schedule against. exocc imports it from beside \
+braggnn_exo.py, so edits there would reach the build; they are still off \
+limits.
+- Do NOT edit the @proc definitions in braggnn_exo.py (the *_on_cpu procs, \
+nlb_on_cpu and braggnn_on_cpu) or the constants: they are the algorithm. \
+Everything from `sched_conv` onwards is scheduling code and is yours to \
+rewrite.
+- braggnn_exo_lowlevel.py schedules the same algorithm all the way down to \
+Gemmini's low-level instructions instead of the loop macros: every operator \
+but the softmax becomes ld_i8 / matmul_acc_i8 / st_acc_i8 style calls on \
+GEMM_SCRATCH and GEMM_ACCUM tiles. Read it for ideas and copy schedules out of \
+it, but do NOT edit it and do NOT submit it: measured on FireSim it is about \
+12x slower than the loop macros (551k vs 47k cycles), because the CPU issues \
+every tile instead of letting the hardware loop unroller do it. It is useful \
+where a macro cannot express what you want. One case is fusion: a low-level \
+operator can leave its result in a GEMM_SCRATCH buffer (`set_memory(p, \
+"buf : _", GEMM_SCRATCH)`) so the next operator reads it without a DRAM round \
+trip, which the loop macros cannot do because they always mvout to DRAM. Note \
+that Exo refuses any scalar access to a GEMM_SCRATCH buffer, so every read and \
+write of it has to come from an instr.
+- braggnn_exo.py is the only file that is compiled, measured and scored. \
+Whatever you take from braggnn_exo_lowlevel.py has to end up in braggnn_exo.py.
 
-braggnn_exo.py already offloads every layer to Gemmini: the scheduling code at \
-the end of the file swaps each proc's loop nest for an instr from gemmini.py \
-and rebinds `braggnn_inference` to the result. Improve on it with Exo \
+braggnn_exo.py already offloads every layer to Gemmini: each `sched_*` \
+function specializes an `*_on_cpu` proc, `replace`s its loop nest with an \
+instr from gemmini.py and fences once at the end, and `schedule_braggnn` \
+`call_eqv`s those scheduled procs into `braggnn_inference`. Improve on it with Exo \
 scheduling (exo.API_scheduling: inline, reorder_loops, divide_loop, \
 unroll_loop, lift_alloc, bind_expr, stage_mem, call_eqv, simplify, ...), \
 rewriting that scheduling code as freely as you like, and keep \
@@ -166,8 +185,9 @@ def build_prompt(
 ) -> str:
     return f"""\
 Working directory in the Exo container: {work_dir}
-- braggnn_exo.py: the current best version ({best.summary()}). Edit this file.
+- braggnn_exo.py: the current best version ({best.summary()}). Edit this file; it is the one that gets compiled and measured.
 - braggnn_exo.orig.py: the original version. Do not edit it.
+- braggnn_exo_lowlevel.py: the same algorithm scheduled down to Gemmini's low-level instructions. Reference only; do not edit it.
 
 History of attempts:
 {chr(10).join(history) or "(none yet)"}

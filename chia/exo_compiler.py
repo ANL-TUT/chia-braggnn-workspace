@@ -46,8 +46,11 @@ def prepare_work_dir(work_dir: str, source_dir: str | None = None) -> None:
 
     Also copies the C harness (with Gemmini headers and allocators) into
     work_dir/harness and gemmini.py next to braggnn_exo.py, which imports its
-    instrs from it, so the agent can try the same ELF build; build_elf always
-    uses the shipped copies.
+    instrs from it, so the agent can try the same ELF build. braggnn_exo_lowlevel.py
+    goes there too, as a read-only reference schedule. build_elf always
+    uses the shipped C harness, but it runs exocc on work_dir/braggnn_exo.py,
+    and exocc puts that file's directory on sys.path, so the gemmini.py the
+    agent sees is the one the build compiles against.
     """
     import exo  # exo-lang, installed in the container
 
@@ -58,6 +61,9 @@ def prepare_work_dir(work_dir: str, source_dir: str | None = None) -> None:
     source = Path(source_dir) if source_dir else SHIPPED_EXO_DIR
     shutil.copy(source / "braggnn_exo.py", work / "braggnn_exo.py")
     shutil.copy(SHIPPED_EXO_DIR / "gemmini.py", work / "gemmini.py")
+    shutil.copy(
+        SHIPPED_EXO_DIR / "braggnn_exo_lowlevel.py", work / "braggnn_exo_lowlevel.py"
+    )
     for name in HARNESS_FILES:
         shutil.copy(SHIPPED_EXO_DIR / name, harness / name)
     for name in HARNESS_DIRS:
