@@ -5,7 +5,6 @@ from braggnn_reference import (
     CONV1_FILTERS,
     CONV2_DIM,
     CONV2_FILTERS,
-    CONV3_DIM,
     CONV3_FILTERS,
     FC1_UNITS,
     FC2_UNITS,
@@ -19,7 +18,6 @@ from braggnn_reference import (
     conv1_cpu,
     conv2_cpu,
     conv3_cpu,
-    fc1_cpu,
     fc2_cpu,
     fc3_cpu,
     fc4_cpu,
@@ -289,9 +287,6 @@ conv3 = sched_conv_lowlevel(
     conv3_cpu, CONV2_DIM, CONV2_FILTERS, CONV3_FILTERS, 3, act=True
 )
 
-fc1 = sched_fc_flat_lowlevel(
-    fc1_cpu, CONV3_FILTERS, CONV3_DIM, CONV3_DIM, FC1_UNITS, act=True
-)
 fc2 = sched_fc_lowlevel(fc2_cpu, FC1_UNITS, FC2_UNITS, act=True)
 fc3 = sched_fc_lowlevel(fc3_cpu, FC2_UNITS, FC3_UNITS, act=True)
 fc4 = sched_fc_lowlevel(fc4_cpu, FC3_UNITS, FC4_UNITS, act=True)
@@ -510,7 +505,6 @@ def schedule_braggnn():
     gemmini = call_eqv(gemmini, "nlb_cpu(_)", nlb)
     gemmini = call_eqv(gemmini, "conv2_cpu(_)", conv2)
     gemmini = call_eqv(gemmini, "conv3_cpu(_)", conv3)
-    gemmini = call_eqv(gemmini, "fc1_cpu(_)", fc1)
     gemmini = call_eqv(gemmini, "fc2_cpu(_)", fc2)
     gemmini = call_eqv(gemmini, "fc3_cpu(_)", fc3)
     gemmini = call_eqv(gemmini, "fc4_cpu(_)", fc4)
@@ -521,11 +515,80 @@ def schedule_braggnn():
 braggnn_inference = schedule_braggnn()
 
 
+def sched_fc1_flat(gemmini):
+    gemmini = inline(gemmini, "fc1_cpu(_)")
+    for buf, hi, lo in (
+        ("fc1_weights_", 2, 3),
+        ("fc1_weights_", 1, 2),
+        ("flattened", 1, 2),
+        ("flattened", 0, 1),
+    ):
+        gemmini = simplify(mult_dim(gemmini, f"{buf} : _", hi, lo))
+    gemmini = simplify(mult_loops(gemmini, gemmini.find_loop("krow"), "krow"))
+    gemmini = simplify(mult_loops(gemmini, gemmini.find_loop("kch"), "k"))
+
+    gemmini = divide_loop(gemmini, "k #0", 16, ["k_o", "k_i"], tail="cut")
+    gemmini = simplify(gemmini)
+    gemmini = old_lift_alloc(gemmini, "res : _", n_lifts=1)
+    gemmini = expand_dim(gemmini, "res : _", "16", "0")
+    gemmini = rearrange_dim(gemmini, "res : _", [1, 0])
+    gemmini = old_fission_after(gemmini, "res[_] = _", n_lifts=1)
+    gemmini = old_fission_after(gemmini, "for k_o in _:_", n_lifts=1)
+    gemmini = old_fission_after(gemmini, "for k_i in _:_ #1", n_lifts=1)
+    gemmini = old_reorder(gemmini, "j k_o")
+    gemmini = old_lift_alloc(gemmini, "w_s : _", n_lifts=1, size=16)
+    gemmini = old_lift_alloc(gemmini, "w_s : _", n_lifts=1)
+    gemmini = old_lift_alloc(gemmini, "i_s : _", n_lifts=1, size=16)
+    gemmini = old_lift_alloc(gemmini, "i_s : _", n_lifts=1, keep_dims=False)
+    for n in (1, 0):
+        gemmini = expand_dim(gemmini, f"i_s : _ #{n}", "16", "0")
+        gemmini = rearrange_dim(gemmini, f"i_s : _ #{n}", [1, 0])
+    gemmini = old_fission_after(gemmini, "w_s[_] = _", n_lifts=2)
+    gemmini = old_fission_after(gemmini, "i_s[_] = _", n_lifts=2)
+    gemmini = simplify(gemmini)
+
+    for n in (5, 4, 2):
+        gemmini = divide_loop(gemmini, f"j #{n}", 1, ["j_o", "j_i"], perfect=True)
+    gemmini = simplify(gemmini)
+    for n in (1, 0):
+        gemmini = reorder_stmts(gemmini, gemmini.find(f"a2 : _ #{n}").expand(0, 1))
+        gemmini = reorder_stmts(gemmini, gemmini.find(f"a2 = _ #{n}").expand(0, 1))
+        gemmini = commute_expr(gemmini, f"a2 * b2 #{n}")
+        gemmini = rewrite_expr(
+            gemmini, gemmini.find(f"b2 = _ #{n}").rhs().idx()[0], "j_o"
+        )
+        gemmini = rewrite_expr(
+            gemmini, gemmini.find(f"a2 = _ #{n}").rhs().idx()[1], "j_i"
+        )
+        gemmini = rewrite_expr(
+            gemmini, gemmini.find(f"res[_] += _ #{n}").idx()[0], "j_o"
+        )
+        gemmini = rewrite_expr(
+            gemmini, gemmini.find(f"res[_] += _ #{n}").idx()[1], "j_i"
+        )
+    gemmini = rewrite_expr(gemmini, gemmini.find("src_tmp = _").rhs().idx()[0], "j_o")
+    gemmini = rewrite_expr(gemmini, gemmini.find("src_tmp = _").rhs().idx()[1], "j_i")
+    gemmini = rewrite_expr(gemmini, gemmini.find("fc1_out[_] = _").idx()[0], "j_o")
+    gemmini = rewrite_expr(gemmini, gemmini.find("fc1_out[_] = _").idx()[1], "j_i")
+
+    gemmini = set_memory(gemmini, "res : _", GEMM_ACCUM)
+    for n in (1, 0):
+        gemmini = set_memory(gemmini, f"w_s : _ #{n}", GEMM_SCRATCH)
+        gemmini = set_memory(gemmini, f"i_s : _ #{n}", GEMM_SCRATCH)
+    gemmini = replace(gemmini, "for j in _:_ #0", ld_acc_i32_col)
+    for _ in range(2):
+        gemmini = replace(gemmini, "for j in _:_ #0", ld_i8_id1)
+        gemmini = replace(gemmini, "for k_i in _:_ #0", ld_i8_col)
+        gemmini = replace(gemmini, "for j_o in _:_ #0", matmul_acc_i8)
+    gemmini = replace(gemmini, "for j_o in _:_ #0", st_acc_i8_relu)
+    return fence_after(gemmini, "st_acc_i8_relu(_)")
+
+
 def schedule_eval():
     gemmini = rename(braggnn_eval_cpu, "braggnn_eval")
     gemmini = call_eqv(gemmini, "braggnn_inference_cpu(_)", braggnn_inference)
     gemmini = inline(gemmini, "braggnn_inference(_)")
-    return gemmini
+    return sched_fc1_flat(gemmini)
 
 
 braggnn_eval = schedule_eval()

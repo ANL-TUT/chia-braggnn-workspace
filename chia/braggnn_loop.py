@@ -59,16 +59,20 @@ braggnn_schedule.py, so edits there would reach the build; they are still off \
 limits.
 - Schedule only what is inside `braggnn_inference`. The per-layer `sched_*` \
 helpers, their instantiations, `schedule_nlb` and `schedule_braggnn` are \
-yours to rewrite. `schedule_eval` is not: leave it exactly as it is, and do \
-not apply any scheduling operation to `braggnn_eval` itself. The patch loop \
-in `braggnn_eval_cpu` brackets each call with the `rdcycle` extern and writes \
-`cycles[p] = end - begin`, and that is the region the loop measures you on, \
-so nothing may cross those two `rdcycle` calls or leave the `for p` loop. \
-Hoisting per-patch work out of the loop only amortizes it over the test set; \
-it is not a speedup and will be treated as a broken candidate. The weight \
-staging that runs before the loop is there so that buffers the schedule may \
-want to reshape or move to GEMM_SCRATCH are allocations rather than \
-arguments; use it from inside `braggnn_inference`, do not add work to it.
+yours to rewrite. `schedule_eval` must keep its `rename` / `call_eqv` / \
+`inline` as they are. The patch loop in `braggnn_eval_cpu` brackets each call \
+with the `rdcycle` extern and writes `cycles[p] = end - begin`, and that is \
+the region the loop measures you on, so no computation may cross those two \
+`rdcycle` calls or leave the `for p` loop. Hoisting per-patch work out of the \
+loop only amortizes it over the test set; it is not a speedup and will be \
+treated as a broken candidate. What you may do at the `braggnn_eval` level is \
+reshape or relocate the staged weight buffers -- `mult_dim`, `rearrange_dim`, \
+`set_memory` and the like -- because `braggnn_eval` is the only place where \
+they are allocations rather than arguments, and Exo refuses those operations \
+on arguments. That is what the staging before the loop is for: e.g. inlining \
+`fc1_cpu` there and folding `fc1_weights_` from i8[16, 8, 5, 5] down to \
+i8[16, 200] (with `simplify` between the `mult_dim`s) turns fc1's K axis into \
+one run of 200 that tiles into 13 matmuls instead of 40.
 - braggnn_schedule_lowlevel.py schedules the same algorithm all the way down to \
 Gemmini's low-level instructions instead of the loop macros: every operator \
 but the softmax becomes ld_i8 / matmul_acc_i8 / st_acc_i8 style calls on \
