@@ -242,6 +242,7 @@ def save(run_dir: Path, source: str | None, evaluation: Evaluation) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=5)
+    parser.add_argument("--schedule", default="braggnn_schedule.py")
     parser.add_argument(
         "--out-dir",
         type=Path,
@@ -281,7 +282,7 @@ def main() -> None:
 
     run_root = f"{WORK_ROOT}/{args.out_dir.name}"
     best_dir = f"{run_root}/iter_00"
-    get(prepare_work_dir.chia_remote(best_dir))
+    get(prepare_work_dir.chia_remote(best_dir, None, args.schedule))
     best_source, best = evaluate(best_dir)
     save(args.out_dir / "iter_00", best_source, best)
     print(f"iter 0 (baseline): {best.summary()}", flush=True)

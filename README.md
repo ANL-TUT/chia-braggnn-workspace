@@ -19,7 +19,14 @@ uv sync
 ## ジョブ投入
 
 ```bash
-uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- python chia/braggnn_loop.py --iterations 5
+# ベースラインのサイクル数計測
+uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- python chia/braggnn_loop.py --iterations 0
+
+# Fusion版（柳沼君作）のサイクル数計測
+uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- python chia/braggnn_loop.py --iterations 0 --schedule braggnn_schedule_fusion.py
+
+# 実際の改善ループ
+uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- python chia/braggnn_loop.py
 ```
 
 ## システム構成
