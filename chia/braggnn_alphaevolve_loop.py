@@ -44,6 +44,7 @@ from firesim import (
     firesim_buildbitstream_mock,
     start_bitstream_build,
 )
+from hammer_ppa import run_ppa_synthesis
 from llm import debug, implement, make_llm, optimize
 
 logger = logging.getLogger(__name__)
@@ -236,10 +237,30 @@ def _run_hw_flow(
                 "continuing to refine the design",
                 attempt + 1, cycles, subpixel_error,
             )
+            # Best-effort PPA (Genus synthesis, sky130+SRAM22) on this
+            # attempt's hardware, now that it has a validated FireSim result.
+            # Never blocks/fails the loop; see hammer_ppa.run_ppa_synthesis.
+            ppa = run_ppa_synthesis(dump, attempt)
+            logger.info(
+                "Hammer PPA (attempt %d): %s", attempt + 1,
+                "OK" if ppa.success else f"FAILED at {ppa.stage}",
+            )
+            if ppa.success and ppa.final_area_rpt:
+                ppa_note = (
+                    "\n\nHammer PPA (Genus synthesis, sky130+SRAM22) for this "
+                    f"attempt's hardware:\n{_tail(ppa.final_area_rpt)}"
+                )
+            else:
+                ppa_note = (
+                    f"\n\nHammer PPA (Genus synthesis, sky130+SRAM22) FAILED at "
+                    f"{ppa.stage} for this attempt's hardware; area/timing not "
+                    "available this round."
+                )
             feedback = (
                 f"Attempt {attempt + 1} succeeded and was validated on FireSim "
                 f"hardware:\n  cycles = {cycles}\n  subpixel_error = {subpixel_error}\n\n"
                 f"Best result so far: cycles = {-best_score if best_score is not None else 'n/a'}."
+                f"{ppa_note}"
             )
             feedback_kind = "success"
             if attempt + 1 < iterations:

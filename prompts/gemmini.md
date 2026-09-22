@@ -20,7 +20,9 @@ scheduling -- tiling, loop order, which ops go through Gemmini vs the host
 CPU, etc. -- against your new hardware for several iterations, entirely on
 its own, before you are asked to make another change. You will not see or
 control that search directly; you only see its outcome (best cycle count
-and accuracy) fed back to you afterward.
+and accuracy) fed back to you afterward, plus a Hammer PPA (Genus synthesis,
+sky130+SRAM22) area/timing report for the same hardware when synthesis
+succeeds.
 
 Given that division of labor:
 - Spend your effort on changes that only a hardware edit can produce --

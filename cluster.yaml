@@ -42,6 +42,28 @@ available_node_types:
             run_setup_commands:
                 - "mkdir -p ~/.config/gcloud"
                 - "sudo cat /mnt/host-gcloud/application_default_credentials.json > ~/.config/gcloud/application_default_credentials.json"
+    vlsi:
+      resources: {"chipyard": 1}
+      num_workers: 1
+      compatible_ips: ["${CHIA_HEAD_IP}"]
+      worker_setup_commands:
+        - "source ${CHIPYARD_PATH}/env.sh"
+      docker:
+        image: "chia-sky130:latest"
+        container_name: "chia-sky130"
+        pull_before_run: False
+        run_options:
+          - "--network host" # For checking the license
+          - "--user ${HOST_UID}:${HOST_GID}"
+          - "-v ${CHIPYARD_PATH}:${CHIPYARD_PATH}"
+          - "-e CADENCE_HOME=/home/ray/cadence"
+          - "-v ${VLSI_CADENCE_HOME}:/home/ray/cadence"
+          - "-e CDS_LIC_FILE=${CDS_LIC_FILE}"
+          - "-e GENUS_BIN=${GENUS_BIN}"
+          - "-e INNOVUS_BIN=${INNOVUS_BIN}"
+          - "-e CADENCE_SETUP=${CADENCE_SETUP}"
+          - "-e CDS_SKIP_OS_CHECK=1"
+
 
 head_env_commands:
     - "source ${CHIA_WORKSPACE_PATH}/.venv/bin/activate"
