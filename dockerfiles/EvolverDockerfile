@@ -1,9 +1,12 @@
 FROM ghcr.io/ucb-bar/chia-opencode:v1.0.1
 
-RUN git config --global url."https://github.com/".insteadOf "git@github.com:"
-
-RUN pip install --no-cache-dir \
+# evolve-flows and skydiscover are private forks under ANL-TUT and can only be
+# fetched over SSH; scripts/deploy.sh forwards the builder's key with --ssh.
+# The same key also fetches evolve-flows' skydiscover submodule (git@github.com:).
+RUN --mount=type=ssh,uid=1000 \
+    mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts && \
+    pip install --no-cache-dir \
     "importlib-metadata<8.8" \
     "alpha-evolve @ git+https://github.com/Google-Cloud-AI/alphaevolve-on-googlecloud.git@b51ab7a6446d0168bf6db52c6dccbec414a21b3f" \
-    "evolve-flows @ git+https://github.com/ucb-bar/evolve-flows.git@62d271304d4675c21b946e327bf542a1f62c1012" \
-    "skydiscover @ git+https://github.com/ucb-bar/skydiscover.git@78833ea6ad4ee1efffe5781112da4ceb95ff5535"
+    "evolve-flows @ git+ssh://git@github.com/ANL-TUT/evolve-flows.git@62d271304d4675c21b946e327bf542a1f62c1012" \
+    "skydiscover @ git+ssh://git@github.com/ANL-TUT/skydiscover.git@78833ea6ad4ee1efffe5781112da4ceb95ff5535"

@@ -5,6 +5,7 @@
 ## 事前準備
 
 事前に uv (https://docs.astral.sh/uv/) をインストールしておいてください。
+依存の一部（evolve-flows, skydiscover）は ANL-TUT の private フォークを SSH で取ってくるので、GitHub に SSH 鍵を登録しておいてください。
 
 適当な場所にcloneします。
 
