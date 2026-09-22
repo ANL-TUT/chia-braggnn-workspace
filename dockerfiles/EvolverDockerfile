@@ -1,0 +1,14 @@
+FROM ghcr.io/ucb-bar/chia-opencode:v1.0.1
+
+# Ray must match the head node
+RUN pip install --no-cache-dir "ray[default]==2.54.0" \
+    openai pyyaml tqdm numpy python-dotenv google-auth requests
+
+# Same sources the head installs from (workspace submodules); build with the
+# workspace root as context.
+COPY --chown=ray:users alphaevolve-on-googlecloud /opt/alphaevolve-on-googlecloud
+COPY --chown=ray:users evolve-flows /opt/evolve-flows
+
+# alpha_evolve first: skydiscover depends on it
+RUN pip install --no-cache-dir -e /opt/alphaevolve-on-googlecloud \
+ && pip install --no-cache-dir -e /opt/evolve-flows/skydiscover -e /opt/evolve-flows

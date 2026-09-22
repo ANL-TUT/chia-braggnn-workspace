@@ -12,6 +12,10 @@
 git clone https://github.com/ANL-TUT/chia-braggnn-workspace.git
 cd chia-braggnn-workspace
 uv sync
+git clone https://github.com/ucb-bar/evolve-flows.git
+git clone https://github.com/Google-Cloud-AI/alphaevolve-on-googlecloud.git
+git submodule update --init --recursive
+uv pip install -e ./alphaevolve-on-googlecloud -e ./evolve-flows/skydiscover -e ./evolve-flows
 ```
 
 おしまい

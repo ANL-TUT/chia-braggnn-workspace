@@ -40,8 +40,11 @@ BUILD_TIMEOUT_SECONDS = 600
 
 
 @ChiaFunction(resources={"exo_build": 1})
-def prepare_work_dir(work_dir: str, source_dir: str | None = None) -> None:
-    """Seed work_dir with braggnn_schedule.py from source_dir (default: the shipped one).
+def prepare_work_dir(
+    work_dir: str, source_dir: str | None = None, source: str | None = None
+) -> None:
+    """Seed work_dir with braggnn_schedule.py from `source` (program text), else
+    from source_dir (default: the shipped one).
 
     Also copies the C harness (with Gemmini headers and allocators) into
     work_dir/harness, and next to braggnn_schedule.py puts gemmini.py (the
@@ -59,8 +62,10 @@ def prepare_work_dir(work_dir: str, source_dir: str | None = None) -> None:
     shutil.copy(
         SHIPPED_EXO_DIR / "braggnn_schedule.py", work / "braggnn_schedule.orig.py"
     )
-    source = Path(source_dir) if source_dir else SHIPPED_EXO_DIR
-    shutil.copy(source / "braggnn_schedule.py", work / "braggnn_schedule.py")
+    source_path = Path(source_dir) if source_dir else SHIPPED_EXO_DIR
+    shutil.copy(source_path / "braggnn_schedule.py", work / "braggnn_schedule.py")
+    if source is not None:
+        (work / "braggnn_schedule.py").write_text(source)
     shutil.copy(SHIPPED_EXO_DIR / "gemmini.py", work / "gemmini.py")
     shutil.copy(SHIPPED_EXO_DIR / "braggnn_reference.py", work / "braggnn_reference.py")
     shutil.copy(
@@ -122,3 +127,9 @@ def build_elf(work_dir: str) -> dict:
                 return {"source": source, "elf": None, "stage": stage, "log": log}
         elf = (build / "braggnn.riscv").read_bytes()
     return {"source": source, "elf": elf, "stage": "build", "log": ""}
+
+
+@ChiaFunction(resources={"exo_build": 0.01})
+def remove_work_dir(work_dir: str) -> None:
+    """Delete a per-candidate work dir once its ELF has been read back."""
+    shutil.rmtree(work_dir, ignore_errors=True)
