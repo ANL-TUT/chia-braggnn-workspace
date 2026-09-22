@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import ClassVar
-
 from braggnn_reference import (
     CONV1_DIM,
     CONV1_FILTERS,
@@ -44,12 +42,13 @@ from exo.API_scheduling import (
     divide_loop,
     expand_dim,
     fission,
-    fuse,
     inline,
     inline_assign,
     inline_window,
     insert_noop_call,
     lift_alloc,
+    mult_dim,
+    mult_loops,
     rearrange_dim,
     remove_loop,
     rename,
@@ -57,22 +56,23 @@ from exo.API_scheduling import (
     reorder_stmts,
     replace,
     resize_dim,
+    rewrite_expr,
     set_memory,
     simplify,
     stage_mem,
-    unroll_loop,
 )
-from exo.libs.memories import GEMM_ACCUM, GEMM_SCRATCH
 from exo.platforms.gemmini import old_fission_after
 from gemmini import (
     DRAM_ALIGNED,
+    GEMM_ACCUM_FIXED,
+    GEMM_SCRATCH_FIXED,
     fence,
     ld_acc_i32_repeat,
     ld_acc_i32_repeat_v2,
-    ld_i8_block_id1,
-    ld_i8_block_id1_v2,
-    ld_i8_block_id2,
-    ld_i8_block_id2_v2,
+    ld_i8_block_strided_id1,
+    ld_i8_block_strided_id1_v2,
+    ld_i8_block_strided_id2,
+    ld_i8_block_strided_id2_v2,
     make_loop_conv_ws,
     make_loop_matmul,
     make_loop_matmul_fc,
@@ -86,54 +86,6 @@ from gemmini import (
 )
 
 NLB_ROW_TILE = 8
-
-
-class GEMM_SCRATCH_FIXED(GEMM_SCRATCH):
-    addresses: ClassVar[dict[str, int]] = {
-        "input_tmp": 1,
-        "input_tmp_1": 1,
-        "weights_tmp": 4096,
-        "weights_tmp_1": 4096,
-    }
-
-    @classmethod
-    def global_(cls):
-        return "#include <stdint.h>\n#include <include/gemmini.h>"
-
-    @classmethod
-    def alloc(cls, new_name, prim_type, shape, srcinfo):
-        try:
-            addr = cls.addresses[new_name]
-        except KeyError as e:
-            raise RuntimeError(f"No fixed scratchpad address for {new_name}") from e
-        return f"{prim_type} *{new_name} = ({prim_type} *)(uintptr_t){addr}u;"
-
-    @classmethod
-    def free(cls, new_name, prim_type, shape, srcinfo):
-        return ""
-
-
-class GEMM_ACCUM_FIXED(GEMM_ACCUM):
-    addresses: ClassVar[dict[str, int]] = {
-        "res": 0x80000000,
-        "res_1": 0x80000000,
-    }
-
-    @classmethod
-    def global_(cls):
-        return "#include <stdint.h>\n#include <include/gemmini.h>"
-
-    @classmethod
-    def alloc(cls, new_name, prim_type, shape, srcinfo):
-        try:
-            addr = cls.addresses[new_name]
-        except KeyError as e:
-            raise RuntimeError(f"No fixed accumulator address for {new_name}") from e
-        return f"{prim_type} *{new_name} = ({prim_type} *)(uintptr_t)0x{addr:08x}u;"
-
-    @classmethod
-    def free(cls, new_name, prim_type, shape, srcinfo):
-        return ""
 
 
 def fence_after(p, pattern):
@@ -204,7 +156,6 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
     assert out_dim <= 16
     assert in_ch % kch_blk == 0
     assert out_ch % och_blk == 0
-
     ohwi = f"{name}_weights_ohwi"
 
     gemmini = rename(cpu, name)
@@ -220,19 +171,10 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
     gemmini = stage_mem(
         gemmini,
         "for orow in _:_",
-        f"inp[0:{in_dim}, 0:{in_dim}, 0:{in_ch}]",
-        "input_tmp",
-    )
-    gemmini = stage_mem(
-        gemmini,
-        "for orow in _:_",
         f"{ohwi}[0:{k}, 0:{k}, 0:{out_ch}, 0:{in_ch}]",
         "weights_tmp",
     )
     gemmini = simplify(gemmini)
-    gemmini = reorder_stmts(
-        gemmini, gemmini.find("weights_tmp: _").expand(1, 0)
-    )
 
     gemmini = divide_loop(
         gemmini, "kch", kch_blk, ["kch_o", "kch_i"], perfect=True
@@ -240,78 +182,120 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
     gemmini = divide_loop(
         gemmini, "och", och_blk, ["och_o", "och_i"], perfect=True
     )
-    gemmini = reorder_loops(gemmini, "ocol och_o")
     gemmini = expand_dim(gemmini, "res: _", och_blk, "och_i")
     gemmini = expand_dim(gemmini, "res: _", out_dim, "ocol")
     gemmini = expand_dim(gemmini, "res: _", out_ch // och_blk, "och_o")
     gemmini = expand_dim(gemmini, "res: _", out_dim, "orow")
     gemmini = lift_alloc(gemmini, "res: _", n_lifts=4)
-    for _ in range(2):
-        gemmini = reorder_stmts(gemmini, gemmini.find("res: _").expand(1, 0))
     gemmini = fission(gemmini, gemmini.find("res[_] = _").after(), n_lifts=4)
     gemmini = fission(gemmini, gemmini.find_loop("krow").after(), n_lifts=4)
+    gemmini = inline_assign(gemmini, "w_s = _")
+    gemmini = inline_assign(gemmini, "i_s = _")
+    gemmini = delete_buffer(gemmini, "w_s: _")
+    gemmini = delete_buffer(gemmini, "i_s: _")
+    gemmini = simplify(gemmini)
 
-    for loop in ("krow", "kcol", "kch_o"):
-        gemmini = reorder_loops(gemmini, "och_i " + loop)
-        gemmini = reorder_loops(gemmini, "ocol " + loop)
+    for loop in ("krow", "och_i", "och_o", "ocol", "orow"):
+        gemmini = reorder_loops(gemmini, f"{loop} kcol")
+    gemmini = stage_mem(
+        gemmini,
+        "for orow in _:_ #1",
+        f"inp[0:{in_dim}, kcol:kcol+{out_dim}, 0:{in_ch}]",
+        "input_tmp",
+    )
+    gemmini = simplify(gemmini)
+    gemmini = expand_dim(gemmini, "input_tmp: _", k, "kcol")
+    gemmini = lift_alloc(gemmini, "input_tmp: _", n_lifts=1)
+    gemmini = simplify(gemmini)
+    gemmini = autofission(
+        gemmini,
+        gemmini.find("input_tmp[_] = _").parent().parent().parent().after(),
+        n_lifts=1,
+    )
+    gemmini = simplify(gemmini)
 
+    gemmini = rearrange_dim(gemmini, "res: _", [1, 0, 2, 3])
+    gemmini = simplify(mult_dim(gemmini, "res: _", 1, 2))
+    gemmini = divide_loop(
+        gemmini, "i2 #2", kch_blk, ["i2_o", "i2_i"], perfect=True
+    )
+    gemmini = divide_dim(gemmini, "input_tmp: _", 3, kch_blk)
+    gemmini = simplify(gemmini)
+    gemmini = rearrange_dim(gemmini, "input_tmp: _", [0, 3, 1, 2, 4])
+    gemmini = simplify(mult_dim(gemmini, "input_tmp: _", 2, 3))
     gemmini = divide_loop(
         gemmini, "i3 #1", kch_blk, ["i3_o", "i3_i"], perfect=True
     )
     gemmini = divide_dim(gemmini, "weights_tmp: _", 3, kch_blk)
     gemmini = divide_loop(
-        gemmini, "i2 #2", och_blk, ["i2_o", "i2_i"], perfect=True
+        gemmini, "i2 #1", och_blk, ["i2_o", "i2_i"], perfect=True
     )
     gemmini = divide_dim(gemmini, "weights_tmp: _", 2, och_blk)
-    gemmini = divide_loop(
-        gemmini, "i2 #1", kch_blk, ["i2_o", "i2_i"], perfect=True
-    )
-    gemmini = divide_dim(gemmini, "input_tmp: _", 2, kch_blk)
     gemmini = simplify(gemmini)
-    gemmini = rearrange_dim(gemmini, "input_tmp: _", [0, 2, 1, 3])
-    gemmini = rearrange_dim(
-        gemmini, "weights_tmp: _", [0, 1, 2, 4, 3, 5]
-    )
+    gemmini = rearrange_dim(gemmini, "weights_tmp: _", [0, 1, 2, 4, 3, 5])
     if och_blk < 16:
-        gemmini = resize_dim(gemmini, "res: _", 3, 16, 0)
+        gemmini = resize_dim(gemmini, "res: _", 2, 16, 0)
         gemmini = simplify(gemmini)
+
+    gemmini = simplify(mult_loops(gemmini, gemmini.find_loop("orow #1"), "m"))
+    gemmini = rewrite_expr(
+        gemmini,
+        gemmini.find("a2 = _").rhs().idx()[2],
+        f"m + {out_dim} * krow",
+    )
+    gemmini = simplify(gemmini)
+    gemmini = simplify(mult_loops(gemmini, gemmini.find_loop("orow"), "m"))
+    for _ in range(2):
+        gemmini = divide_loop(gemmini, "m", 16, ["m_o", "m_i"], tail="cut")
+    gemmini = simplify(gemmini)
+
+    for _ in range(2):
+        gemmini = reorder_loops(gemmini, "m_i och_o")
+    for _ in range(2):
+        gemmini = reorder_loops(gemmini, "m_i och_o")
+        gemmini = reorder_loops(gemmini, "och_i krow")
+        gemmini = reorder_loops(gemmini, "m_i krow")
+        gemmini = reorder_loops(gemmini, "och_i kch_o")
+        gemmini = reorder_loops(gemmini, "m_i kch_o")
+    gemmini = reorder_loops(gemmini, "ocol och_o")
 
     gemmini = set_memory(gemmini, "input_tmp: _", GEMM_SCRATCH_FIXED)
     gemmini = set_memory(gemmini, "weights_tmp: _", GEMM_SCRATCH_FIXED)
     gemmini = set_memory(gemmini, "res: _", GEMM_ACCUM_FIXED)
 
-    gemmini = replace(gemmini, "for i1 in _:_ #1", ld_i8_block_id1)
-    gemmini = call_eqv(gemmini, ld_i8_block_id1, ld_i8_block_id1_v2)
-    gemmini = inline(gemmini, ld_i8_block_id1_v2)
-    gemmini = inline_window(gemmini, "src = _")
-    gemmini = inline_window(gemmini, "dst = _")
-    gemmini = simplify(gemmini)
-    gemmini = replace(gemmini, "for i2_i in _:_ #0", ld_i8_block_id2)
-    gemmini = call_eqv(gemmini, ld_i8_block_id2, ld_i8_block_id2_v2)
-    gemmini = inline(gemmini, ld_i8_block_id2_v2)
+    gemmini = replace(gemmini, "for i2_i in _:_ #0", ld_i8_block_strided_id2)
+    gemmini = call_eqv(gemmini, ld_i8_block_strided_id2, ld_i8_block_strided_id2_v2)
+    gemmini = inline(gemmini, ld_i8_block_strided_id2_v2)
     gemmini = inline_window(gemmini, "src = _")
     gemmini = inline_window(gemmini, "dst = _")
     gemmini = simplify(gemmini)
 
-    gemmini = inline_assign(gemmini, "w_s = _")
-    gemmini = inline_assign(gemmini, "i_s = _")
-    gemmini = delete_buffer(gemmini, "w_s: _")
-    gemmini = delete_buffer(gemmini, "i_s: _")
-    gemmini = replace(gemmini, "for ocol in _:_ #0", ld_acc_i32_repeat)
-    gemmini = call_eqv(gemmini, ld_acc_i32_repeat, ld_acc_i32_repeat_v2)
-    gemmini = inline(gemmini, ld_acc_i32_repeat_v2)
+    gemmini = replace(gemmini, "for i1 in _:_ #2", ld_i8_block_strided_id1)
+    gemmini = call_eqv(gemmini, ld_i8_block_strided_id1, ld_i8_block_strided_id1_v2)
+    gemmini = inline(gemmini, ld_i8_block_strided_id1_v2)
     gemmini = inline_window(gemmini, "src = _")
     gemmini = inline_window(gemmini, "dst = _")
     gemmini = simplify(gemmini)
-    gemmini = replace(gemmini, "for ocol in _:_ #0", matmul_acc_i8_trans_b)
-    gemmini = call_eqv(
-        gemmini, matmul_acc_i8_trans_b, matmul_acc_i8_trans_b_v2
-    )
-    gemmini = inline(gemmini, matmul_acc_i8_trans_b_v2)
-    gemmini = inline_window(gemmini, "A = _")
-    gemmini = inline_window(gemmini, "B = _")
-    gemmini = inline_window(gemmini, "C = _")
-    gemmini = simplify(gemmini)
+
+    for _ in range(2):
+        gemmini = replace(gemmini, "for m_i in _:_ #0", ld_acc_i32_repeat)
+        gemmini = call_eqv(gemmini, ld_acc_i32_repeat, ld_acc_i32_repeat_v2)
+        gemmini = inline(gemmini, ld_acc_i32_repeat_v2)
+        gemmini = inline_window(gemmini, "src = _")
+        gemmini = inline_window(gemmini, "dst = _")
+        gemmini = simplify(gemmini)
+
+    for _ in range(2):
+        gemmini = replace(gemmini, "for m_i in _:_ #0", matmul_acc_i8_trans_b)
+        gemmini = call_eqv(
+            gemmini, matmul_acc_i8_trans_b, matmul_acc_i8_trans_b_v2
+        )
+        gemmini = inline(gemmini, matmul_acc_i8_trans_b_v2)
+        gemmini = inline_window(gemmini, "A = _")
+        gemmini = inline_window(gemmini, "B = _")
+        gemmini = inline_window(gemmini, "C = _")
+        gemmini = simplify(gemmini)
+
     gemmini = replace(gemmini, "for ocol in _:_ #0", st_acc_i8_relu)
     gemmini = call_eqv(gemmini, st_acc_i8_relu, st_acc_i8_relu_v2)
     gemmini = inline(gemmini, st_acc_i8_relu_v2)
@@ -319,33 +303,18 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
     gemmini = inline_window(gemmini, "dst = _")
     gemmini = simplify(gemmini)
 
-    if out_ch < 16:
-        for _ in range(3):
-            gemmini = unroll_loop(gemmini, "och_o")
-
-    gemmini = hoist_config(gemmini, "config_ld_i8_block_id1(_)", 1)
-    gemmini = hoist_config(gemmini, "config_ld_i8_block_id2(_)", 3, 1)
-    gemmini = hoist_config(
-        gemmini, "config_ld_repeat(_)", 2 if out_ch > 16 else 1, 2
-    )
-    gemmini = hoist_config(
-        gemmini, "config_matmul_trans_b(_)", 5 if out_ch > 16 else 4, 3
-    )
+    gemmini = hoist_config(gemmini, "config_ld_i8_block_id2(_)", 3)
+    gemmini = hoist_config(gemmini, "config_ld_repeat(_)", 2)
+    gemmini = delete_config(gemmini, "config_ld_repeat(_) #1")
+    gemmini = hoist_config(gemmini, "config_ld_i8_block_id1(_)", 2)
+    gemmini = hoist_config(gemmini, "config_matmul_trans_b(_)", 5)
+    gemmini = delete_config(gemmini, "config_matmul_trans_b(_) #1")
     gemmini = hoist_config_after_store(
-        gemmini, "config_st_i8_relu(_)", 2 if out_ch > 16 else 1, 4
+        gemmini, "config_st_i8_relu(_)", 2, 0
     )
-
-    for loop in ("kch_o", "kcol"):
-        gemmini = unroll_loop(gemmini, loop)
-    if out_ch < 16:
-        gemmini = unroll_loop(gemmini, "krow")
-
-    gemmini = fuse(gemmini, "orow #1", "orow #2")
-    gemmini = fuse(gemmini, "orow", "orow #1")
-    if out_ch > 16:
-        gemmini = fuse(gemmini, "och_o #1", "och_o #2")
-
-    gemmini = insert_noop_call(gemmini, gemmini.find_loop("orow").after(), fence, [])
+    gemmini = insert_noop_call(
+        gemmini, gemmini.find_loop("orow").after(), fence, []
+    )
 
     return gemmini
 

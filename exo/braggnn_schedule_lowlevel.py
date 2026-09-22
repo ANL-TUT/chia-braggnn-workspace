@@ -59,8 +59,8 @@ from gemmini import (
     fence,
     ld_acc_i8_scaled,
     ld_acc_i8_scaled_acc,
-    ld_acc_i32_bias,
     ld_acc_i32_col,
+    ld_acc_i32_repeat,
     ld_i8_col,
     ld_i8_im2col,
     make_loop_softmax_flat,
@@ -72,6 +72,14 @@ from gemmini import (
 
 NLB_ROWS = CONV1_DIM * CONV1_DIM
 NLB_SOFTMAX_TILE = 72
+
+
+for _pair in (
+    "src_tmp = _ ; tmp_res1 : _",
+    "acc_scale(_) ; tmp_res2 : _",
+    "src_tmp = _ ; tmp_res2 : _",
+):
+    st_acc_i8_act = reorder_stmts(st_acc_i8_act, st_acc_i8_act.find(_pair))
 
 
 def fence_after(p, pattern):
@@ -218,7 +226,7 @@ def sched_conv_lowlevel(cpu, in_dim, in_ch, out_ch, k, act=False):
     gemmini = set_memory(gemmini, "w_s : _", GEMM_SCRATCH)
     gemmini = set_memory(gemmini, "i_s : _", GEMM_SCRATCH)
     gemmini = old_reorder(gemmini, "och_i kch_i")
-    gemmini = replace(gemmini, "for ocol in _:_ #0", ld_acc_i32_bias)
+    gemmini = replace(gemmini, "for ocol in _:_ #0", ld_acc_i32_repeat)
     gemmini = replace(gemmini, "for kch_i in _:_ #0", ld_i8_id1)
     gemmini = replace(gemmini, "for ocol in _:_ #0", ld_i8_id2)
     gemmini = old_reorder(gemmini, "kch_i och_i")
@@ -268,7 +276,7 @@ def sched_conv_im2col_lowlevel(cpu, in_dim, in_ch, out_ch, k):
     gemmini = set_memory(gemmini, "i_s : _", GEMM_SCRATCH)
     gemmini = old_reorder(gemmini, "k ocol")
     gemmini = simplify(gemmini)
-    gemmini = replace(gemmini, "for ocol in _:_ #0", ld_acc_i32_bias)
+    gemmini = replace(gemmini, "for ocol in _:_ #0", ld_acc_i32_repeat)
     gemmini = replace(gemmini, "for k in _:_ #0", ld_i8_id1)
     gemmini = replace(gemmini, "for ocol in _:_ #0", ld_i8_im2col)
     gemmini = old_reorder(gemmini, "k och_i")
@@ -363,7 +371,7 @@ def sched_conv_sub(sub, name, in_ch, out_ch):
     g = set_memory(g, "w_s : _", GEMM_SCRATCH)
     g = set_memory(g, "i_s : _", GEMM_SCRATCH)
     g = old_reorder(g, "och_i kch_i")
-    g = replace(g, "for ocol in _:_ #0", ld_acc_i32_bias)
+    g = replace(g, "for ocol in _:_ #0", ld_acc_i32_repeat)
     g = replace(g, "for kch_i in _:_ #0", ld_i8_id1)
     g = replace(g, "for ocol in _:_ #0", ld_i8_id2)
     g = old_reorder(g, "kch_i och_i")
