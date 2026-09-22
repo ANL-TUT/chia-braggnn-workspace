@@ -136,10 +136,10 @@ alphaevolve:
     staged weight buffers (`mult_dim`, `rearrange_dim`, `set_memory` and the
     like), because `braggnn_eval` is the only place where they are allocations
     rather than arguments, and Exo refuses those operations on arguments. That
-    is what the staging before the patch loop is for: for example, inlining
-    `fc1_cpu` there and folding `fc1_weights_` from `i8[16, 8, 5, 5]` down to
-    `i8[16, 200]` (with `simplify` between the `mult_dim`s) turns fc1's K axis
-    into one run of 200 that tiles into 13 matmuls instead of 40.
+    is what the staging before the patch loop is for. Do not spend it on fc1:
+    `make_loop_matmul_fc` already treats `in_ch * in_h * in_w` as one K axis,
+    so fc1 runs as a single hardware loop over K = 200 (13 tiles) and folding
+    `fc1_weights_` gains nothing.
 
     ## Hard rules
 
@@ -192,6 +192,13 @@ alphaevolve:
       loop by a name that an earlier step already consumed or renamed (for
       example `find_loop("i1")` after `divide_loop` split `i1` into `i1o`/`i1i`):
       it raises "failed to find matches".
+    - Buffer-shape operations take dimension *indices* (0-based positions in
+      the shape), never sizes: `mult_dim(p, buf, hi_dim_idx, lo_dim_idx)`,
+      `divide_dim(p, buf, dim_idx, quotient)`, `rearrange_dim(p, buf,
+      permutation)`. For `x : i8[16, 8, 5, 5]`, `mult_dim(p, "x : _", 2, 3)`
+      gives `i8[16, 8, 25]` and then `mult_dim(p, "x : _", 1, 2)` gives
+      `i8[16, 200]`. Passing a size such as 5 raises "Cannot multiply
+      out-of-bounds dimension index 5".
     - Check that a loop exists before scheduling it. `find`/`find_loop` on a
       pattern that has no match raises SchedulingError.
     - `divide_loop` with a factor that does not divide the loop bound leaves a
