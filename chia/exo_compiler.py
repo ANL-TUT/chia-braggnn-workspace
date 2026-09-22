@@ -49,8 +49,9 @@ def prepare_work_dir(
 
     Also copies the C harness (with Gemmini headers and allocators) into
     work_dir/harness, and next to braggnn_schedule.py puts gemmini.py (the
-    instrs), braggnn_reference.py (the *_on_cpu specs it schedules) and
-    braggnn_schedule_lowlevel.py (a read-only reference schedule). build_elf always
+    instrs), braggnn_reference.py (the *_on_cpu specs it schedules) and the
+    read-only reference schedules (braggnn_schedule_lowlevel.py and
+    braggnn_schedule_fusion.py). build_elf always
     uses the shipped C harness, but it runs exocc on
     work_dir/braggnn_schedule.py, and exocc puts that file's directory on
     sys.path, so the modules the agent sees are the ones the build uses.
@@ -67,10 +68,11 @@ def prepare_work_dir(
     shutil.copy(source / schedule_name, work / "braggnn_schedule.py")
     shutil.copy(SHIPPED_EXO_DIR / "gemmini.py", work / "gemmini.py")
     shutil.copy(SHIPPED_EXO_DIR / "braggnn_reference.py", work / "braggnn_reference.py")
-    shutil.copy(
-        SHIPPED_EXO_DIR / "braggnn_schedule_lowlevel.py",
-        work / "braggnn_schedule_lowlevel.py",
-    )
+    for reference in (
+        "braggnn_schedule_lowlevel.py",
+        "braggnn_schedule_fusion.py",
+    ):
+        shutil.copy(SHIPPED_EXO_DIR / reference, work / reference)
     for name in HARNESS_FILES:
         shutil.copy(SHIPPED_EXO_DIR / name, harness / name)
     for name in HARNESS_DIRS:

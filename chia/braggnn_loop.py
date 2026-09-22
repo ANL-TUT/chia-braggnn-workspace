@@ -86,8 +86,38 @@ operator can leave its result in a GEMM_SCRATCH buffer (`set_memory(p, \
 trip, which the loop macros cannot do because they always mvout to DRAM. Note \
 that Exo refuses any scalar access to a GEMM_SCRATCH buffer, so every read and \
 write of it has to come from an instr.
+- braggnn_schedule_fusion.py is a second read-only reference. It keeps the loop \
+macros for conv1, the NLB and the fc layers, but schedules conv2 and conv3 down \
+to low-level instrs. Measured on FireSim it is 48,113 cycles against 45,170 for \
+braggnn_schedule.py, so it is still slower overall -- do not copy it wholesale. \
+What is worth taking from it is how it makes a low-level conv cheap:
+  - a matmul command costs about 17 cycles whatever N is, because the \
+weight-stationary preload always pushes 16 rows into the array. With one \
+output row per column position N is only 7 and the array runs at 7/17. \
+braggnn_schedule_fusion.py stages the input once per kernel column (`stage_mem` \
+with `inp[0:in_dim, kcol:kcol+out_dim, 0:in_ch]`, then `expand_dim` over kcol) \
+so that the rows of A for consecutive output rows are contiguous, merges \
+(orow, ocol) into one axis with `mult_dim` on the buffers plus `mult_loops` on \
+the loops, folds the div/mod that `mult_loops` leaves with `rewrite_expr`, and \
+then cuts that axis into chunks of 16. That takes conv2 from 504 matmul pairs \
+to 288 and conv3 from 90 to 36.
+  - every config write is lifted out of the loops with the `*_v2` instrs \
+(`call_eqv` to the v2, `inline`, then fission the config call out). The new \
+`fission` refuses to split a config write from the instr that reads it, so the \
+store config uses `old_fission_after` instead; neither needs an unsafe option.
+  - the Gemmini scratchpad buffers use a Memory subclass with fixed addresses \
+instead of the gemm_malloc allocator, and the weights are transposed into an \
+OHWI copy once before the patch loop so that a weight mvin can move 4 blocks \
+at a time.
+- Two things that measurement showed and you should not rediscover the hard \
+way: an i32 accumulator mvin must stay at 16 columns or fewer (a multi-block \
+one hangs the accelerator, because the DMA byte counter is 6 bits wide), and \
+moving per-patch work such as a scratchpad weight load out of the `for p` loop \
+is amortization, not a speedup, so it is rejected even though it lowers the \
+number the harness prints.
 - braggnn_schedule.py is the only file that is compiled, measured and scored. \
-Whatever you take from braggnn_schedule_lowlevel.py has to end up in braggnn_schedule.py.
+Whatever you take from braggnn_schedule_lowlevel.py or \
+braggnn_schedule_fusion.py has to end up in braggnn_schedule.py.
 
 braggnn_schedule.py already offloads every layer to Gemmini: each `sched_*` \
 function specializes an `*_on_cpu` proc, `replace`s its loop nest with an \
@@ -214,6 +244,7 @@ Working directory in the Exo container: {work_dir}
 - braggnn_schedule.py: the current best version ({best.summary()}). Edit this file; it is the one that gets compiled and measured.
 - braggnn_schedule.orig.py: the original version. Do not edit it.
 - braggnn_schedule_lowlevel.py: the same algorithm scheduled down to Gemmini's low-level instructions. Reference only; do not edit it.
+- braggnn_schedule_fusion.py: conv2 and conv3 scheduled down to low-level instrs with N=16 matmul tiling, the rest left on the loop macros (48,113 cycles). Reference only; do not edit it.
 
 History of attempts:
 {chr(10).join(history) or "(none yet)"}

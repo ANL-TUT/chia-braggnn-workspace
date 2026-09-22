@@ -93,7 +93,7 @@ class GEMM_SCRATCH_FIXED(GEMM_SCRATCH):
         "input_tmp": 1,
         "input_tmp_1": 1,
         "weights_tmp": 4096,
-        "weights_tmp_1": 4096,
+        "weights_tmp_1": 6144,
     }
 
     @classmethod
@@ -178,17 +178,16 @@ def outer_copy_loop(p, pattern, patch_loop="p"):
     return c
 
 
-def lift_weight_transpose(p, buf, patch_loop="p"):
-    p = lift_alloc(p, f"{buf}: _", n_lifts=1)
+def lift_out_of_patch_loop(p, pattern, patch_loop="p"):
     while True:
-        c = outer_copy_loop(p, f"{buf}[_] = _", patch_loop)
+        c = outer_copy_loop(p, pattern, patch_loop)
         if isinstance(c.prev(), InvalidCursor):
             break
         p = reorder_stmts(p, c.expand(1, 0))
     p = autofission(
-        p, outer_copy_loop(p, f"{buf}[_] = _", patch_loop).after(), n_lifts=1
+        p, outer_copy_loop(p, pattern, patch_loop).after(), n_lifts=1
     )
-    parent = outer_copy_loop(p, f"{buf}[_] = _", patch_loop).parent()
+    parent = outer_copy_loop(p, pattern, patch_loop).parent()
     if isinstance(parent, ForCursor) and parent.name() == patch_loop:
         p = remove_loop(p, parent)
     return p
@@ -507,7 +506,8 @@ def schedule_eval():
     gemmini = call_eqv(gemmini, "braggnn_inference_cpu(_)", braggnn_inference)
     gemmini = inline(gemmini, "braggnn_inference(_)")
     for buf in ("conv2_weights_ohwi", "conv3_weights_ohwi"):
-        gemmini = lift_weight_transpose(gemmini, buf)
+        gemmini = lift_alloc(gemmini, f"{buf}: _", n_lifts=1)
+        gemmini = lift_out_of_patch_loop(gemmini, f"{buf}[_] = _")
     return gemmini
 
 
