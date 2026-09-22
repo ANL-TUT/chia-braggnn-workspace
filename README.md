@@ -6,7 +6,7 @@
 
 事前に uv (https://docs.astral.sh/uv/) をインストールしておいてください。
 
-ホームディレクトリ直下などにcloneします。
+適当な場所にcloneします。
 
 ```bash
 git clone https://github.com/ANL-TUT/chia-braggnn-workspace.git
