@@ -1,0 +1,318 @@
+from __future__ import annotations
+
+from braggnn_reference import (
+    CONV1_DIM,
+    CONV1_FILTERS,
+    CONV2_DIM,
+    CONV2_FILTERS,
+    CONV3_DIM,
+    CONV3_FILTERS,
+    FC1_UNITS,
+    FC2_UNITS,
+    FC3_UNITS,
+    FC4_UNITS,
+    INPUT_DIM,
+    OUTPUT_UNITS,
+    SOFTMAX_MAX_SHIFT,
+    braggnn_eval_cpu,
+    braggnn_inference_cpu,
+    conv1_cpu,
+    conv2_cpu,
+    conv3_cpu,
+    fc1_cpu,
+    fc2_cpu,
+    fc3_cpu,
+    fc4_cpu,
+    fc_output_cpu,
+    matmul_attention_g_cpu,
+    matmul_theta_phi_cpu,
+    nlb_cpu,
+    nlb_out_conv_cpu,
+    nlb_qkv_conv_cpu,
+    nlb_softmax_cpu,
+    resadd_relu_cpu,
+)
+from exo.API_scheduling import (
+    call_eqv,
+    divide_loop,
+    inline,
+    insert_noop_call,
+    rename,
+    replace,
+    simplify,
+)
+from gemmini import (
+    fence,
+    make_loop_conv_ws,
+    make_loop_matmul,
+    make_loop_matmul_fc,
+    make_loop_matmul_trans_b,
+    make_loop_resadd,
+    make_loop_softmax,
+)
+
+# EVOLVE-BLOCK-START
+from exo.API_scheduling import mult_dim, mult_loops, unroll_loop
+from gemmini import _gemm_loop_matmul_fc, acc_scale, clamp, relu
+
+NLB_ROW_TILE = 8
+
+
+def find_all_loops(block):
+    loops = []
+    for stmt in block:
+        if type(stmt).__name__ == "ForSeqCursor":
+            loops.append(stmt)
+            loops.extend(find_all_loops(stmt.body()))
+        elif type(stmt).__name__ == "IfCursor":
+            if stmt.then_body():
+                loops.extend(find_all_loops(stmt.then_body()))
+            try:
+                if stmt.else_body():
+                    loops.extend(find_all_loops(stmt.else_body()))
+            except Exception:
+                pass
+    return loops
+
+
+def fence_after(p, pattern):
+    return insert_noop_call(p, p.find(pattern).after(), fence, [])
+
+
+def sched_conv(cpu, in_dim, in_ch, out_ch, k, act=False):
+    name = cpu.name()[: -len("_cpu")]
+
+    do_conv = make_loop_conv_ws(f"do_{name}", in_dim, in_ch, out_ch, k, act)
+
+    gemmini = rename(cpu, name)
+    gemmini = replace(gemmini, "for orow in _:_", do_conv)
+    gemmini = fence_after(gemmini, f"do_{name}(_)")
+
+    return gemmini
+
+
+def sched_fc(cpu, in_ch, in_h, in_w, out_features, act=False):
+    name = cpu.name()[: -len("_cpu")]
+
+    do_fc = make_loop_matmul_fc(f"do_{name}", in_ch, in_h, in_w, out_features, act)
+
+    gemmini = rename(cpu, name)
+    gemmini = replace(gemmini, "for j in _:_", do_fc)
+    gemmini = fence_after(gemmini, f"do_{name}(_)")
+
+    return gemmini
+
+
+def sched_matmul_trans_b(cpu):
+    name = cpu.name()[: -len("_cpu")]
+
+    do_matmul = make_loop_matmul_trans_b(f"do_{name}", CONV2_FILTERS, CONV1_DIM)
+
+    gemmini = rename(cpu, name)
+    gemmini = divide_loop(gemmini, "i1", NLB_ROW_TILE, ["i1_o", "i1_i"], tail="cut")
+    gemmini = simplify(gemmini)
+    gemmini = replace(gemmini, "for i1_i in _:_", do_matmul)
+    gemmini = replace(gemmini, gemmini.find_loop("i1_o").next(), do_matmul)
+    gemmini = fence_after(gemmini, f"do_{name}(_) #1")
+
+    return gemmini
+
+
+def sched_softmax(cpu):
+    name = cpu.name()[: -len("_cpu")]
+
+    do_softmax = make_loop_softmax(f"do_{name}", CONV1_DIM, SOFTMAX_MAX_SHIFT)
+
+    gemmini = rename(cpu, name)
+    gemmini = divide_loop(gemmini, "i1", NLB_ROW_TILE, ["i1_o", "i1_i"], tail="cut")
+    gemmini = simplify(gemmini)
+    gemmini = replace(gemmini, "for i1_i in _:_", do_softmax)
+    gemmini = replace(gemmini, gemmini.find_loop("i1_o").next(), do_softmax)
+    gemmini = fence_after(gemmini, f"do_{name}(_) #1")
+
+    return gemmini
+
+
+def sched_matmul(cpu):
+    name = cpu.name()[: -len("_cpu")]
+
+    do_matmul = make_loop_matmul(f"do_{name}", CONV2_FILTERS, CONV1_DIM)
+
+    gemmini = rename(cpu, name)
+    gemmini = replace(gemmini, "for i1 in _:_", do_matmul)
+    gemmini = fence_after(gemmini, f"do_{name}(_)")
+
+    return gemmini
+
+
+def sched_resadd(cpu):
+    name = cpu.name()[: -len("_cpu")]
+
+    do_resadd = make_loop_resadd(f"do_{name}", CONV1_DIM, CONV1_FILTERS)
+
+    gemmini = rename(cpu, name)
+    gemmini = replace(gemmini, "for i1 in _:_", do_resadd)
+    gemmini = fence_after(gemmini, f"do_{name}(_)")
+
+    return gemmini
+
+
+def make_loop_matmul_fc_folded(name, in_features, out_features, act=False):
+    c_instr = _gemm_loop_matmul_fc(in_features, out_features, act)
+
+    if act:
+        @instr(c_instr)
+        def loop_matmul_fc_folded(
+            inp: i8[in_features, 1, 1] @ DRAM,
+            weights: i8[out_features, in_features, 1, 1] @ DRAM,
+            bias: i32[out_features] @ DRAM,
+            output: i8[out_features, 1, 1] @ DRAM,
+            scale: f32 @ DRAM,
+            post_scale: f32 @ DRAM,
+        ):
+            for j in seq(0, out_features):
+                res: i32
+                res = bias[j]
+                for k in seq(0, in_features):
+                    w_s: i8 @ DRAM
+                    w_s = weights[j, k, 0, 0]
+                    i_s: i8 @ DRAM
+                    i_s = inp[k, 0, 0]
+                    a2: i32
+                    b2: i32
+                    a2 = i_s
+                    b2 = w_s
+                    res += a2 * b2
+
+                tmp_scale: f32
+                tmp_scale = scale * post_scale
+                src_tmp: i32
+                src_tmp = res
+                tmp_res1: f32
+                acc_scale(src_tmp, tmp_res1, tmp_scale)
+                tmp_res2: i8
+                clamp(tmp_res1, tmp_res2)
+                tmp_res2 = relu(tmp_res2)
+                output[j, 0, 0] = tmp_res2
+    else:
+        pass
+
+    return rename(loop_matmul_fc_folded, name)
+
+
+conv1 = sched_conv(conv1_cpu, INPUT_DIM, 1, CONV1_FILTERS, 3)
+conv2 = sched_conv(conv2_cpu, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 3, act=True)
+conv3 = sched_conv(conv3_cpu, CONV2_DIM, CONV2_FILTERS, CONV3_FILTERS, 3, act=True)
+nlb_qkv_conv = sched_conv(nlb_qkv_conv_cpu, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 1)
+nlb_out_conv = sched_conv(nlb_out_conv_cpu, CONV1_DIM, CONV2_FILTERS, CONV1_FILTERS, 1)
+
+fc2 = sched_fc(fc2_cpu, FC1_UNITS, 1, 1, FC2_UNITS, act=True)
+fc3 = sched_fc(fc3_cpu, FC2_UNITS, 1, 1, FC3_UNITS, act=True)
+fc4 = sched_fc(fc4_cpu, FC3_UNITS, 1, 1, FC4_UNITS, act=True)
+fc_output = sched_fc(fc_output_cpu, FC4_UNITS, 1, 1, OUTPUT_UNITS)
+
+matmul_theta_phi = sched_matmul_trans_b(matmul_theta_phi_cpu)
+nlb_softmax = sched_softmax(nlb_softmax_cpu)
+matmul_attention_g = sched_matmul(matmul_attention_g_cpu)
+resadd_relu = sched_resadd(resadd_relu_cpu)
+
+
+def schedule_nlb():
+    gemmini = rename(nlb_cpu, "nlb")
+    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
+    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
+    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
+    gemmini = call_eqv(gemmini, "matmul_theta_phi_cpu(_)", matmul_theta_phi)
+    gemmini = call_eqv(gemmini, "nlb_softmax_cpu(_)", nlb_softmax)
+    gemmini = call_eqv(gemmini, "matmul_attention_g_cpu(_)", matmul_attention_g)
+    gemmini = call_eqv(gemmini, "nlb_out_conv_cpu(_)", nlb_out_conv)
+    gemmini = call_eqv(gemmini, "resadd_relu_cpu(_)", resadd_relu)
+    return gemmini
+
+
+nlb = schedule_nlb()
+
+
+def schedule_braggnn():
+    gemmini = rename(braggnn_inference_cpu, "braggnn_inference")
+    gemmini = call_eqv(gemmini, "conv1_cpu(_)", conv1)
+    gemmini = call_eqv(gemmini, "nlb_cpu(_)", nlb)
+    gemmini = call_eqv(gemmini, "conv2_cpu(_)", conv2)
+    gemmini = call_eqv(gemmini, "conv3_cpu(_)", conv3)
+    # fc1_cpu will be custom-folded and inlined inside schedule_eval
+    gemmini = call_eqv(gemmini, "fc2_cpu(_)", fc2)
+    gemmini = call_eqv(gemmini, "fc3_cpu(_)", fc3)
+    gemmini = call_eqv(gemmini, "fc4_cpu(_)", fc4)
+    gemmini = call_eqv(gemmini, "fc_output_cpu(_)", fc_output)
+    return gemmini
+
+
+braggnn_inference = schedule_braggnn()
+
+
+def schedule_eval():
+    gemmini = rename(braggnn_eval_cpu, "braggnn_eval")
+    gemmini = call_eqv(gemmini, "braggnn_inference_cpu(_)", braggnn_inference)
+    gemmini = inline(gemmini, "braggnn_inference(_)")
+
+    # Dynamically locate fc1's input and weight staging buffers
+    import re
+    call_str = re.search(r'fc1_cpu\(([^)]+)\)', str(gemmini)).group(1)
+    call_args = [a.strip() for a in call_str.split(',')]
+    fc1_inp_name = call_args[0]
+    fc1_w_alloc = call_args[1]
+
+    # Fold input and weight dimensions down to 1D feature dimensions
+    gemmini = mult_dim(gemmini, fc1_inp_name, 1, 5)
+    gemmini = simplify(gemmini)
+    gemmini = mult_dim(gemmini, fc1_inp_name, 0, 25)
+    gemmini = simplify(gemmini)
+
+    gemmini = mult_dim(gemmini, fc1_w_alloc, 2, 5)
+    gemmini = simplify(gemmini)
+    gemmini = mult_dim(gemmini, fc1_w_alloc, 1, 25)
+    gemmini = simplify(gemmini)
+
+    # Inline fc1_cpu inside eval
+    gemmini = inline(gemmini, "fc1_cpu(_)")
+
+    # Flatten nested spatial loops kch, krow, kcol into a single loop k
+    gemmini = mult_loops(gemmini, gemmini.find_loop("kch"), "kch_krow")
+    gemmini = mult_loops(gemmini, gemmini.find_loop("kch_krow"), "k")
+    gemmini = simplify(gemmini)
+
+    # Swap folded loop nest with our custom Gemmini-optimized ws instruction
+    do_fc1_folded = make_loop_matmul_fc_folded("do_fc1_folded", 200, 16, act=True)
+    gemmini = replace(gemmini, gemmini.find_loop("j"), do_fc1_folded)
+    gemmini = fence_after(gemmini, "do_fc1_folded(_)")
+
+    # Dynamic Compile-Time Loop Unroller for remaining CPU tasks (quantization, formatting, etc.)
+    while True:
+        unrolled_any = False
+        all_loops = find_all_loops(gemmini.body())
+        for loop_cursor in all_loops:
+            loop_str = str(loop_cursor)
+            # Restrict unrolling to loops with size <= 512 to control generated code size
+            bound_match = re.search(r'for\s+([a-zA-Z0-9_]+)\s+in\s+seq\(\s*0\s*,\s*([0-9]+)\s*\)', loop_str)
+            if bound_match:
+                var_name = bound_match.group(1)
+                bound = int(bound_match.group(2))
+                if var_name != 'p' and bound <= 512:
+                    try:
+                        gemmini = unroll_loop(gemmini, loop_cursor)
+                        gemmini = simplify(gemmini)
+                        unrolled_any = True
+                        break
+                    except Exception:
+                        pass
+        if not unrolled_any:
+            break
+
+    return gemmini
+
+
+braggnn_eval = schedule_eval()
+# EVOLVE-BLOCK-END
+
+
+__all__ = ["braggnn_eval"]
