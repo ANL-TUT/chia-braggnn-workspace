@@ -11,8 +11,8 @@ dependencies = [
 
 [tool.uv.sources]
 alpha-evolve = { git = "https://github.com/Google-Cloud-AI/alphaevolve-on-googlecloud.git", rev = "b51ab7a6446d0168bf6db52c6dccbec414a21b3f" }
-evolve-flows = { git = "ssh://git@github.com/ANL-TUT/evolve-flows.git", rev = "62d271304d4675c21b946e327bf542a1f62c1012" }
-skydiscover = { git = "ssh://git@github.com/ANL-TUT/skydiscover.git", rev = "78833ea6ad4ee1efffe5781112da4ceb95ff5535" }
+evolve-flows = { git = "ssh://git@github.com/ANL-TUT/evolve-flows.git", rev = "4f913a8453be130c7b00916a4d9129fd142e02ab" }
+skydiscover = { git = "ssh://git@github.com/ANL-TUT/skydiscover.git", rev = "056819e0a11a584dd619a94462e7b57cb5447edf" }
 
 [dependency-groups]
 dev = [
