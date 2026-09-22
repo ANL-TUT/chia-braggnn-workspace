@@ -58,14 +58,15 @@ def run_alphaevolve_search(
     initial_program: str,
     firesim_ready: ObjectRef,
     config_path: str = DEFAULT_CONFIG,
-    output_dir: Optional[str] = None,
+    eval_dir: Optional[str] = None,
     hw_change_summary: str = "",
     hw_context: Optional[str] = None,
     fake_run: bool = False,
 ):
-    if output_dir is None:
-        output_dir = DEFAULT_OUTPUT_BASE
-    os.makedirs(output_dir, exist_ok=True)
+    # *eval_dir* is resolved in the evolver container, where the evaluator runs;
+    # the driver's own artifacts go through *dump* instead.
+    if eval_dir is None:
+        eval_dir = DEFAULT_OUTPUT_BASE
 
     actor_name = f"{EVOLVER_ACTOR_NAME}-attempt{attempt}"
 
@@ -81,7 +82,7 @@ def run_alphaevolve_search(
 
     evaluator = BraggnnEvaluator(
         firesim_ready=firesim_ready,
-        output_dir=output_dir,
+        output_dir=eval_dir,
         fake_run=fake_run,
         timeout=3600.0,
         max_retries=1,
@@ -173,12 +174,12 @@ def run_alphaevolve_search(
     evaluator.close()
     ray.kill(evolver)
 
-    eval_log = get(_read_eval_log.options(resources={"evolver": 0.01}).chia_remote(output_dir))
+    eval_log = get(_read_eval_log.options(resources={"evolver": 0.01}).chia_remote(eval_dir))
     if eval_log:
         dump.text(f"chia_eval_log_attempt{attempt}.jsonl", eval_log)
 
     candidates = get(
-        _read_candidates.options(resources={"evolver": 0.01}).chia_remote(output_dir)
+        _read_candidates.options(resources={"evolver": 0.01}).chia_remote(eval_dir)
     )
     for name, content in candidates.items():
         dump.text(f"attempt{attempt}_{name}", content)

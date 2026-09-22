@@ -19,6 +19,7 @@ import argparse
 import logging
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import ray
@@ -65,6 +66,24 @@ def _cycles_score(run) -> Optional[float]:
     return -float(cycles)
 
 
+def _default_out_dir() -> str:
+    """Where a run writes by default: the same place braggnn_loop.py uses, an
+    absolute path under $HOME on the head node. A relative one would land in
+    the temporary directory Ray unpacks the job into and be hard to find."""
+    return str(
+        Path.home() / "braggnn_loop_runs" / datetime.now().strftime("%Y%m%d_%H%M%S")
+    )
+
+
+def _eval_dir(output_dir: str) -> str:
+    """Where BraggnnEvaluator writes chia_eval_log.jsonl and candidates/.
+
+    It runs inside the evolver container, which has its own filesystem and no
+    access to the driver's home, so this stays a relative path there; the files
+    are read back onto the driver with _read_eval_log / _read_candidates."""
+    return os.path.join(DEFAULT_OUTPUT_BASE, os.path.basename(output_dir.rstrip("/")))
+
+
 def _run_sw_only(dump: Dumper, output_dir: str, config_path: str):
     """One AlphaEvolve search with no FireSim node (laptop test): no HW LLM,
     Chisel build or bitstream, and each candidate's "cycles" is its ELF size.
@@ -72,7 +91,7 @@ def _run_sw_only(dump: Dumper, output_dir: str, config_path: str):
     logger.warning("--sw-only: no FireSim runs; cycles are ELF sizes, not measurements")
     run = run_alphaevolve_search(
         dump, 0, SEED_PROGRAM, ray.put((True, "[sw-only] no bitstream build", "")),
-        config_path=config_path, output_dir=output_dir,
+        config_path=config_path, eval_dir=_eval_dir(output_dir),
         hw_context="(not available: --sw-only test run, no FireSim node)",
         fake_run=True,
     )
@@ -101,8 +120,7 @@ def _run_hw_flow(
     )
 
     if output_dir is None:
-        run_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = os.path.join(DEFAULT_OUTPUT_BASE, run_tag)
+        output_dir = _default_out_dir()
 
     dump = Dumper(output_dir)
     logger.info("Output directory: %s", output_dir)
@@ -188,7 +206,7 @@ def _run_hw_flow(
 
         run = run_alphaevolve_search(
             dump, attempt, exo_seed, bitstream_ref,
-            config_path=config_path, output_dir=output_dir,
+            config_path=config_path, eval_dir=_eval_dir(output_dir),
             hw_change_summary=_tail(impl.result),
         )
 
@@ -255,8 +273,7 @@ def run_flow(
     )
 
     if output_dir is None:
-        run_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = os.path.join(DEFAULT_OUTPUT_BASE, run_tag)
+        output_dir = _default_out_dir()
 
     dump = Dumper(output_dir)
     logger.info("Output directory: %s", output_dir)
@@ -276,7 +293,7 @@ def run_flow(
         SEED_PROGRAM,
         firesim_ready,
         config_path=config_path,
-        output_dir=output_dir,
+        eval_dir=_eval_dir(output_dir),
     )
     logger.info(
         "Software search finished: status=%s, iterations=%s, best=%s",
@@ -292,8 +309,9 @@ def run_flow(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--out-dir", default=None,
-        help=f"Results directory (default: timestamped subdir of {DEFAULT_OUTPUT_BASE})",
+        "--out-dir",
+        default=_default_out_dir(),
+        help="Results directory (default: ~/braggnn_loop_runs/<timestamp>)",
     )
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="AlphaEvolve config")
     parser.add_argument(

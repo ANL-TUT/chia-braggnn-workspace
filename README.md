@@ -27,11 +27,27 @@ uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- pyt
 
 # 実際の改善ループ
 uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- python chia/braggnn_loop.py
+
+# AlphaEvolve 版（設定は config_alphaevolve.yaml）
+uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- python chia/braggnn_alphaevolve_loop.py
 ```
+
+どちらも結果は `~/braggnn_loop_runs/<timestamp>/`。残すものは `results/` にコピーしてコミット。
 
 ## システム構成
 
-LLM (OpenCode + Gemini) で `exo/braggnn_schedule.py` を最適化するループ
+最適化するのは `exo/braggnn_schedule.py` だけ。アルゴリズム（`braggnn_reference.py`）、
+Gemmini の instr（`gemmini.py`）、C ハーネス（`braggnn_main.c`）、ハードウェアは固定。
+`braggnn_schedule_lowlevel.py` と `braggnn_schedule_fusion.py` は参照用の別スケジュール。
+
+| worker | 場所 / docker | resource | 役割 |
+|---|---|---|---|
+| head | 133.15.45.28 | - | ray job driver（`braggnn_loop.py` / `braggnn_alphaevolve_loop.py`） |
+| opencode | chia-evolver | `opencode_creds` 1 / `evolver` 1 | OpenCode（Gemini）と `EvolverNode`。同じコンテナが両方の役をもつ |
+| exo_compiler | chia-exo | `exo_build` 8 | `chia/exo_compiler.py`: 作業ディレクトリ作成、BashTool で LLM が `braggnn_schedule.py` を編集、exocc + riscv64 gcc で ELF ビルド |
+| firesim | 133.15.45.113 | `FPGA` 1 / `manager` 1 | `chia/firesim.py`: Alveo U250 / Rocket + Gemmini（`FireSimGemminiRocketConfig`）で実行、avg cycles と PASSED / FAILED を返す |
+
+### LLM ループ（`braggnn_loop.py`）
 
 ```mermaid
 graph TD
@@ -66,12 +82,41 @@ graph TD
     F -->|uartlog| D
 ```
 
-| worker | 場所 / docker | resource | 役割 |
-|---|---|---|---|
-| head | 133.15.45.28 | - | `chia/braggnn_loop.py`（ray job driver） |
-| opencode | chia-opencode | `opencode_creds` 1 | OpenCode。Gemini (Vertex AI) を使用 |
-| exo_compiler | chia-exo | `exo_build` 8 | `chia/exo_compiler.py`: 作業ディレクトリ作成、BashTool で LLM が `braggnn_schedule.py` を編集、exocc + riscv64 gcc で ELF ビルド |
-| firesim | 133.15.45.113 | `firesim` 1 | `chia/firesim.py`: Alveo U250 / Rocket + Gemmini（`FireSimGemminiRocketConfig`）で実行、avg cycles と PASSED / FAILED を返す |
+### AlphaEvolve 探索（`braggnn_alphaevolve_loop.py`）
+
+```mermaid
+graph TD
+    subgraph head2[head]
+        D2[braggnn_alphaevolve_loop.py]
+    end
+
+    subgraph ev[opencode]
+        N[EvolverNode]
+        EV[BraggnnEvaluator]
+    end
+
+    A[AlphaEvolve<br/>Google Cloud]
+
+    N -.->|candidate| A
+    A -.-> N
+
+    subgraph exo2[exo_compiler]
+        C[build_candidate_elf]
+    end
+
+    subgraph fire2[firesim]
+        F2[run_workload]
+    end
+
+    D2 -->|seed + config| N
+    N -->|source| EV
+    EV -->|source| C
+    C -->|ELF| EV
+    EV -->|ELF| F2
+    F2 -->|uartlog| EV
+    EV -->|score| N
+    N -->|best program| D2
+```
 
 ## 結果
 
