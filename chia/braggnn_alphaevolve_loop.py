@@ -57,13 +57,17 @@ def _tail(text: Optional[str], limit: int = FEEDBACK_LOG_TAIL_CHARS) -> str:
     return text if len(text) <= limit else f"...(truncated)...\n{text[-limit:]}"
 
 
-def _cycles_score(run) -> Optional[float]:
+def _best_cycles(run) -> Optional[float]:
+    """Measured avg cycles of the run's best program (attached by
+    run_alphaevolve_search), or None if no candidate worked."""
     if run is None or run.terminal_status == "error" or not run.best_program:
         return None
-    cycles = (run.best_metrics or {}).get("cycles")
-    if cycles is None:
-        return None
-    return -float(cycles)
+    return (run.best_metrics or {}).get("cycles")
+
+
+def _cycles_score(run) -> Optional[float]:
+    cycles = _best_cycles(run)
+    return None if cycles is None else -cycles
 
 
 def _default_out_dir() -> str:
@@ -213,7 +217,7 @@ def _run_hw_flow(
         if (
             run.terminal_status != "error"
             and run.best_program
-            and (run.best_metrics or {}).get("cycles") is not None
+            and _best_cycles(run) is not None
         ):
             exo_seed = run.best_program
 
@@ -301,7 +305,8 @@ def run_flow(
         run.iteration_count,
         run.best_metrics,
     )
-    if run.best_program:
+    # With no working candidate the top-scored program is the seed or a failure.
+    if _best_cycles(run) is not None:
         dump.text("best_braggnn_schedule.py", run.best_program)
     return run
 

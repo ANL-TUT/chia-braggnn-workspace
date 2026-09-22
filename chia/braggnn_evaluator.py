@@ -1,6 +1,7 @@
 import contextvars
 import hashlib
 import itertools
+import json
 import logging
 import os
 import re
@@ -47,6 +48,13 @@ class BraggnnRunResult:
 # braggnn_main.c's summary lines.
 _CYCLES_RE = re.compile(r"Avg cycles:\s*(\d+)")
 _ERROR_RE = re.compile(r"Avg error:\s*\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)")
+
+MEASUREMENTS_FILE = "measurements.jsonl"
+
+
+def source_sha256(program_solution: str) -> str:
+    return hashlib.sha256(program_solution.strip().encode()).hexdigest()
+
 
 _FORBIDDEN_EXO = re.compile(r"\bunsafe_[A-Za-z_]+|\b_loopir_proc\b|\bLoopIR\b")
 
@@ -102,6 +110,30 @@ class BraggnnEvaluator(ChiaEvaluator):
     def _log_evaluation(self, *args: Any, **kwargs: Any) -> None:
         os.makedirs(self.output_dir, exist_ok=True)
         super()._log_evaluation(*args, **kwargs)
+
+    async def evaluate_program(
+        self, program_solution: str, program_id: str = "",
+    ) -> EvaluationResult:
+        result = await super().evaluate_program(program_solution, program_id)
+        self._record_measurement(program_solution, result)
+        return result
+
+    def _record_measurement(self, program_solution: str, result: EvaluationResult) -> None:
+        """Append the candidate's measured cycles / error, keyed by its source.
+        Only the score reaches the AlphaEvolve server, so this is where the
+        driver looks up the real numbers of the program it reports as best.
+        One short append per line, so the evaluator threads need no lock."""
+        artifacts = result.artifacts or {}
+        record = {
+            "sha256": source_sha256(program_solution),
+            "combined_score": result.metrics.get("combined_score", 0.0),
+            "cycles": artifacts.get("cycles"),
+            "subpixel_error": artifacts.get("subpixel_error"),
+            "failure_stage": artifacts.get("failure_stage"),
+        }
+        os.makedirs(self.output_dir, exist_ok=True)
+        with open(os.path.join(self.output_dir, MEASUREMENTS_FILE), "a") as f:
+            f.write(json.dumps(record) + "\n")
 
     def _build(self, program_solution: str) -> Any:
         idx = next(self._candidate_counter)
@@ -192,7 +224,7 @@ class BraggnnEvaluator(ChiaEvaluator):
 
         if not getattr(result, "success", False):
             return EvaluationResult(
-                metrics={"error": 0.0, "combined_score": 0.0},
+                metrics={"combined_score": 0.0, "score": 0.0},
                 artifacts={
                     "failure_stage": "build",
                     "error_type": "BuildFailure",

@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from typing import Optional
@@ -8,7 +9,7 @@ from ray import ObjectRef
 
 from chia.base.ChiaFunction import ChiaFunction, get
 
-from braggnn_evaluator import BraggnnEvaluator
+from braggnn_evaluator import MEASUREMENTS_FILE, BraggnnEvaluator, source_sha256
 from evolve_flows.evolver.node import EvolverNode
 from evolve_flows.evolver.types import EvolverInput
 from firesim import read_gemmini_params_h
@@ -30,6 +31,15 @@ def _read_evolver_env(names: list) -> dict:
 @ChiaFunction(resources={"evolver": 0.01})
 def _read_eval_log(output_dir: str) -> str:
     path = os.path.join(output_dir, "chia_eval_log.jsonl")
+    if not os.path.exists(path):
+        return ""
+    with open(path) as f:
+        return f.read()
+
+
+@ChiaFunction(resources={"evolver": 0.01})
+def _read_measurements(output_dir: str) -> str:
+    path = os.path.join(output_dir, MEASUREMENTS_FILE)
     if not os.path.exists(path):
         return ""
     with open(path) as f:
@@ -115,6 +125,11 @@ def run_alphaevolve_search(
         config_dict = yaml.safe_load(f)
 
     ae_config = config_dict.setdefault("alphaevolve", {})
+    # The server's max_programs includes the seed ("The initial program counts
+    # towards this limit"), while the client stops after max_iterations *new*
+    # candidates. With equal values the server finishes one short and the client
+    # idles until idle_timeout_s, so derive it here rather than in the YAML.
+    ae_config["max_programs"] = config_dict["max_iterations"] + 1
     if ae_config.get("project_id") == "GOOGLE_CLOUD_PROJECT":
         ae_config["project_id"] = evolver_env["GOOGLE_CLOUD_PROJECT"]
     if ae_config.get("engine_id") == "GE_APP_ID":
@@ -193,6 +208,13 @@ def run_alphaevolve_search(
     if eval_log:
         dump.text(f"chia_eval_log_attempt{attempt}.jsonl", eval_log)
 
+    measurements = get(
+        _read_measurements.options(resources={"evolver": 0.01}).chia_remote(eval_dir)
+    )
+    if measurements:
+        dump.text(f"{MEASUREMENTS_FILE[:-6]}_attempt{attempt}.jsonl", measurements)
+    _attach_measurement(result, measurements)
+
     candidates = get(
         _read_candidates.options(resources={"evolver": 0.01}).chia_remote(eval_dir)
     )
@@ -204,3 +226,18 @@ def run_alphaevolve_search(
         )
 
     return result
+
+
+def _attach_measurement(result, measurements: str) -> None:
+    """Put the best program's measured cycles / sub-pixel error into
+    best_metrics. The server only knows the score, so best_metrics holds just
+    that until it is matched here, by source, to what the evaluator measured."""
+    if not result.best_program or result.best_metrics is None:
+        return
+    key = source_sha256(result.best_program)
+    for line in measurements.splitlines():
+        record = json.loads(line)
+        if record["sha256"] == key and record.get("cycles") is not None:
+            result.best_metrics["cycles"] = record["cycles"]
+            result.best_metrics["subpixel_error"] = record["subpixel_error"]
+            return
