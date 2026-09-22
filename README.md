@@ -75,49 +75,51 @@ graph TD
 
 ## 結果
 
-### `results/20260913_152111/`
+### `results/20260922_171212/`
 
-`--iterations 5`（`gemini-3.8-flash`）での実行結果。FireSim（Rocket + Gemmini）上で 10 パッチ推論したときの 1 パッチあたり平均サイクル数と、予測誤差の平均で評価（誤差の許容値は 0.5 px）。
+`--iterations 5`（`gemini-3.8-flash`）での実行結果。FireSim（Rocket + Gemmini）上で 10 パッチ推論したときの 1 パッチあたり平均サイクル数と、予測誤差の平均で評価（誤差の許容値は 0.5 px）。ベースラインは `exo/braggnn_schedule.py` そのままで、全レイヤが既に Gemmini にオフロードされている状態。
 
 | iter | stage | 結果 | avg cycles | 高速化率 | avg error (px) | 備考 |
 |---|---|---|---:|---:|---|---|
-| 00 | firesim | PASSED | 25,056,479 | 1.00x | (0.205, 0.196) | ベースライン（`exo/braggnn_exo.py` そのまま） |
-| 01 | firesim | PASSED | 4,964,578 | 5.05x | (0.210, 0.183) | new best |
-| 02 | llm | 失敗 | - | - | - | LLM の応答なし（`no reply`） |
-| 03 | firesim | PASSED | 3,074,242 | 8.15x | (0.478, 0.231) | new best |
-| 04 | firesim | PASSED | 3,107,555 | 8.06x | (0.452, 0.205) | best 更新なし |
-| 05 | firesim | PASSED | **3,073,496** | **8.15x** | (0.460, 0.231) | new best（最終 best） |
+| 00 | firesim | PASSED | 45,170 | 1.00x | (0.219, 0.151) | ベースライン |
+| 01 | firesim | PASSED | 40,853 | 1.11x | (0.219, 0.151) | new best |
+| 02 | firesim | PASSED | 48,626 | 0.93x | (0.219, 0.151) | 悪化 |
+| 03 | firesim | PASSED | **39,875** | **1.13x** | (0.219, 0.151) | new best（最終 best） |
+| 04 | firesim | PASSED | 41,206 | 1.10x | (0.219, 0.151) | best 更新なし |
+| 05 | firesim | PASSED | 45,716 | 0.99x | (0.219, 0.151) | best 更新なし |
 
-- 最終 best は iter_05（`best_braggnn_exo.py` は `iter_05/braggnn_exo.py` と同じ中身）。exocc で C にしたものは `best_c/`（`braggnn_exo.c` / `.h` / `.d`）に置いている
-- OpenCode セッションは 4 回分（iter_01, 03, 04, 05）で、合計 462 ターン、約 $9.46
-- 主な最適化
-  - iter_01: NLB の 1x1 conv（theta / phi / g / out）と `matmul_transA` / `matmul_transB` を Gemmini にオフロード。Gemmini バッファの確保を `lift_alloc` でプロシージャ先頭に移動。CPU 側の conv1 / conv3 / leaky / resadd はループ展開
-  - iter_03: conv2 / conv3 / NLB conv の重み転置と、matmul の行列転置を最内ループの外に移動（1 回だけ前もって実行）。conv1 は入力パッチをまとめて読み込むようにした。leaky / FC / softmax のループ展開をさらに広げた
-  - iter_04: 転置ループの順序を入れ替えてメモリへの書き込みを連続にした。requant とバイアス初期化を 8 要素ずつ展開。conv1 は `ow` を 3 ずつタイリング
-  - iter_05: conv1 で出力チャネル 8 本を 1 回のループ反復で計算するようにした。matmul の requant、NLB の reshape、入力の量子化、flatten をすべて展開
-- 注意: iter_01 から iter_03 にかけてサイクル数は約 40% 減ったが、x 方向の誤差が 0.21 px から 0.46〜0.48 px に増えていて、許容値 0.5 px のすぐ手前まで来ている
+- 最終 best は iter_03（`best_braggnn_schedule.py` は `iter_03/braggnn_schedule.py` と同じ中身）
+- 全イテレーションで avg error が完全に一致しているのは、Exo のスケジューリングが等価性を保証していて数値結果が変わらないため。この探索で動くのはサイクル数だけ
+- OpenCode セッションは 5 回分、合計 618 ターン、約 $12.96
+- 主な最適化（LLM 自身の説明より）
+  - iter_01: 小さい FC 層（fc3 / fc4 / fc_output）を Gemmini から CPU に戻して完全展開（Gemmini 起動 3 回・RoCC config 18 命令・DMA 往復・fence 3 回を削減）。入力量子化と NCHW flatten のループ展開と順序入れ替え。NLB の theta / phi / g 間の fence を 1 つに集約
+  - iter_02: `NLB_ROW_TILE = 8` による `divide_loop` をやめて matmul_theta_phi / nlb_softmax を 1 回の `gemmini_loop_ws` に統合。fc2 も CPU に移動。量子化 / flatten を完全展開 → **悪化（48,626）**
+  - iter_03: 連続する Gemmini 演算の間の fence を 6 か所削除（conv1→NLB、theta_phi→softmax、attention_g→nlb_out、conv2→conv3、fc1→fc2）。CPU→Gemmini 境界（conv3 の後、fc2 の後）の fence は保持。iter_02 の変更は採らず iter_01 ベース
+  - iter_04: NLB 内の残り 3 か所（nlb_qkv_conv #2 の後、nlb_softmax の後、resadd_relu の後）の fence も削除 → **悪化（41,206）**
+  - iter_05: `schedule_eval` で `fp32_patch` / `pred` を `DRAM_STATIC` に移して計測区間内の `free()` を除去。1 反復しかない `i1_o` ループを展開 → **悪化（45,716）**
+- fence 削除は iter_03 の 6 か所までは効いたが、iter_04 でさらに削ると逆に悪化している。ベースラインからの改善幅は 11.7%（45,170 → 39,875）
 
-#### best（iter_05）のパッチごとの誤差
+#### best（iter_03）のパッチごとの誤差
 
-`iter_05/log.txt` の値。太字は 0.5 px を超えているもの。
+`iter_03/log.txt` の値。太字は 0.5 px を超えているもの。
 
 | patch | cycles | err x (px) | err y (px) |
 |---:|---:|---:|---:|
-| 0 | 3,147,258 | **-0.691** | **0.636** |
-| 1 | 3,088,145 | **-0.502** | -0.174 |
-| 2 | 3,083,333 | -0.400 | -0.184 |
-| 3 | 3,068,753 | -0.152 | 0.180 |
-| 4 | 3,058,620 | -0.331 | -0.479 |
-| 5 | 3,078,877 | **-0.691** | -0.140 |
-| 6 | 3,050,966 | -0.459 | -0.159 |
-| 7 | 3,047,020 | -0.346 | -0.151 |
-| 8 | 3,048,881 | -0.389 | -0.012 |
-| 9 | 3,063,110 | **-0.645** | -0.199 |
-| 平均（絶対値） | 3,073,496 | 0.460 | 0.231 |
+| 0 | 44,744 | -0.344 | **0.636** |
+| 1 | 39,452 | 0.191 | -0.001 |
+| 2 | 39,352 | 0.466 | -0.011 |
+| 3 | 39,306 | 0.022 | 0.354 |
+| 4 | 39,361 | 0.276 | -0.219 |
+| 5 | 39,301 | **-0.777** | 0.034 |
+| 6 | 39,330 | -0.026 | 0.014 |
+| 7 | 39,264 | 0.001 | 0.022 |
+| 8 | 39,361 | 0.044 | 0.162 |
+| 9 | 39,286 | -0.039 | 0.061 |
+| 平均（絶対値） | 39,875 | 0.219 | 0.151 |
 
 - ログの `Avg error` は絶対値の平均
-- x の誤差は 10 パッチすべてマイナス（符号付きの平均は -0.461 px）で、どのパッチも同じ方向にずれている
-- 許容値 0.5 px は平均に対する判定なので PASSED だが、パッチ単位では patch 0・1・5・9 の x と patch 0 の y が 0.5 px を超えている
+- patch 0 だけ 44,744 cycles と 5,400 ほど多い。i-cache / データのコールドスタート分
+- 誤差はスケジュールに依存しない（ベースラインと同じ値）ので、この探索では精度は悪化しない
 
 ## クラスタ立ち上げ（やらないでください）
 
