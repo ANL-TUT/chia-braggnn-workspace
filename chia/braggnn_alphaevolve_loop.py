@@ -1,6 +1,10 @@
-"""HW + SW co-design loop for the BraggNN Exo kernel on Gemmini.
+"""AlphaEvolve optimization loop for the BraggNN Exo kernel on Gemmini.
 
-Each attempt has two halves:
+The normal entry point searches the Exo schedule against the currently deployed
+FireSim bitstream and does not modify the hardware.  The experimental HW + SW
+co-design implementation is kept in this module but is not called by the CLI.
+
+The retained co-design implementation has two halves per attempt:
   1. HW: OpenCode (Gemini on Vertex AI) edits the Gemmini Chisel sources on the
      FireSim node, then the design is built (Verilator) and a FireSim bitstream
      build is started in the background.
@@ -81,7 +85,7 @@ def _run_sw_only(dump: Dumper, output_dir: str, config_path: str):
     return run
 
 
-def run_flow(
+def _run_hw_flow(
     output_dir: Optional[str] = None,
     iterations: int = MAX_ATTEMPTS,
     config_path: str = DEFAULT_CONFIG,
@@ -237,38 +241,70 @@ def run_flow(
     return result
 
 
+def run_flow(
+    output_dir: Optional[str] = None,
+    config_path: str = DEFAULT_CONFIG,
+    sw_only: bool = False,
+):
+    """Run one software search against the currently deployed hardware."""
+    if not ray.is_initialized():
+        ray.init(address="auto")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
+    if output_dir is None:
+        run_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = os.path.join(DEFAULT_OUTPUT_BASE, run_tag)
+
+    dump = Dumper(output_dir)
+    logger.info("Output directory: %s", output_dir)
+
+    if sw_only:
+        return _run_sw_only(dump, output_dir, config_path)
+
+    # AlphaEvolve still accepts a readiness ref because the retained co-design
+    # path starts a bitstream build in parallel.  In the normal path the
+    # existing bitstream is already ready, so resolve it immediately.
+    firesim_ready = ray.put(
+        (True, "[fixed-hardware] using the deployed FireSim bitstream", "")
+    )
+    run = run_alphaevolve_search(
+        dump,
+        0,
+        SEED_PROGRAM,
+        firesim_ready,
+        config_path=config_path,
+        output_dir=output_dir,
+    )
+    logger.info(
+        "Software search finished: status=%s, iterations=%s, best=%s",
+        run.terminal_status,
+        run.iteration_count,
+        run.best_metrics,
+    )
+    if run.best_program:
+        dump.text("best_braggnn_schedule.py", run.best_program)
+    return run
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--iterations", type=int, default=MAX_ATTEMPTS,
-        help="Outer HW attempts (each runs a full AlphaEvolve search; the SW "
-             "budget per attempt is max_iterations in the config)",
-    )
     parser.add_argument(
         "--out-dir", default=None,
         help=f"Results directory (default: timestamped subdir of {DEFAULT_OUTPUT_BASE})",
     )
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="AlphaEvolve config")
     parser.add_argument(
-        "--mock-chisel-build", action="store_true",
-        help="Skip the Verilator build (debugging)",
-    )
-    parser.add_argument(
         "--sw-only", action="store_true",
         help="Laptop test without a FireSim node: only the AlphaEvolve search, "
              "with fake runs (cycles = ELF size)",
     )
-    parser.add_argument(
-        "--mock-bitstream", action="store_true",
-        help="Skip the bitstream build; reuse the existing hwdb entry (debugging)",
-    )
     args = parser.parse_args()
     run_flow(
         output_dir=args.out_dir,
-        iterations=args.iterations,
         config_path=args.config,
-        mock_chisel_build=args.mock_chisel_build,
-        mock_bitstream=args.mock_bitstream,
         sw_only=args.sw_only,
     )
 
