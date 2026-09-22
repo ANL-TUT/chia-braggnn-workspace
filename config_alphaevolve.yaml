@@ -1,9 +1,9 @@
 # AlphaEvolve config.
 # Uses Google's AlphaEvolve cloud API as the search backend.
 #
-# Usage:  python run_flow.py --config config_alphaevolve.yaml
+# Usage:  python chia/braggnn_alphaevolve_loop.py --config config_alphaevolve.yaml
 
-max_iterations: 10        # SW inner-loop budget per HW change (maps to max_programs_evaluated in the backend)
+max_iterations: 10        # SW search budget (maps to max_programs_evaluated in the backend)
 log_level: "INFO"
 file_suffix: ".py"
 
@@ -25,14 +25,11 @@ alphaevolve:
   problem_description: |
     ## Role
 
-    You are an expert in the Exo user-schedulable language (exo-lang) and in
-    performance tuning for RISC-V + Gemmini accelerators. You are the software
-    half of a hardware/software co-design loop: a separate, much slower process
-    periodically changes the Gemmini hardware (mesh size, scratchpad/
-    accumulator capacity, dataflow, reservation-station depth, DMA width, etc.),
-    rebuilds, and hands control back to you for a fresh batch of iterations
-    against the new hardware. You cannot change the hardware and must not
-    assume it will adapt to your schedule.
+    You are an expert in the Exo user-schedulable language
+    (https://github.com/exo-lang/exo) and in performance tuning of C kernels
+    for RISC-V CPUs and Gemmini accelerators. You optimize software for the
+    currently deployed FireSim/Gemmini configuration. You cannot change the
+    hardware and must not assume it will adapt to your schedule.
 
     ## Task
 
@@ -44,6 +41,8 @@ alphaevolve:
     and checks the prediction error. The score is the average cycles per patch;
     lower is better. Anything that fails to compile or link, exceeds 0.5 px
     average prediction error, or hangs scores nothing.
+
+    The candidate must stay valid for `exocc` from Exo commit `defe172`.
 
     ## The program you are given
 
@@ -75,6 +74,52 @@ alphaevolve:
     scheduling operation preserves the program's meaning; the C inside a
     library `@instr` is trusted, so the schedule is the only thing you tune.
 
+    ## Read-only reference schedules and measured lessons
+
+    The repository also contains two read-only schedules of the same algorithm.
+    They are references only: do not submit either one or assume that replacing
+    the seed wholesale with one of them is an optimization.
+
+    - `braggnn_schedule_lowlevel.py` schedules every operator except softmax
+      down to Gemmini's low-level `ld_i8` / `matmul_acc_i8` / `st_acc_i8`
+      style instructions on `GEMM_SCRATCH` and `GEMM_ACCUM`. It measures about
+      352k cycles versus 45k for the seed because the CPU issues every tile
+      instead of using Gemmini's hardware loop unroller. Its useful idea is
+      selective fusion: a low-level operator can leave a result in scratchpad
+      for the next operator, avoiding a DRAM round trip that the whole-layer
+      loop macros always perform.
+    - `braggnn_schedule_fusion.py` keeps the loop macros for conv1, the NLB and
+      the fully connected layers, but lowers conv2 and conv3. It measures
+      48,113 cycles versus 45,170 for the seed, so it is also slower overall.
+      Its useful ideas are more targeted:
+        - A weight-stationary matmul command costs about 17 cycles regardless
+          of N because preload pushes 16 rows into the array. With one output
+          row per column position, N is only 7 and utilization is 7/17. Stage
+          input once per kernel column, merge `(orow, ocol)` into one axis with
+          `mult_dim` plus `mult_loops`, fold the resulting div/mod expressions
+          with `rewrite_expr`, then tile that axis by 16. This reduces conv2
+          from 504 matmul pairs to 288 and conv3 from 90 to 36.
+        - Lift config writes out of loops with the `*_v2` instructions using
+          `call_eqv`, `inline`, and fission. The newer `fission` refuses to
+          separate a config write from the instruction that reads it, so the
+          store config uses `old_fission_after`; neither requires an unsafe
+          option.
+        - Fixed-address `Memory` subclasses can hold Gemmini scratchpad data,
+          and transposing weights once before the patch loop can let one mvin
+          transfer four blocks at a time.
+
+    Two measured constraints are especially important:
+
+    - An i32 accumulator mvin must stay at 16 columns or fewer. A multi-block
+      one hangs this accelerator because its DMA byte counter is 6 bits wide.
+    - Moving per-patch work, such as a scratchpad weight load, outside the
+      `for p` loop is invalid amortization rather than a real speedup, even if
+      it lowers the number printed by the harness.
+
+    `braggnn_schedule.py` is the only program compiled, measured and scored.
+    Any useful reference idea must be expressed in that candidate through
+    equivalence-preserving Exo scheduling.
+
     ## What is measured
 
     `braggnn_eval` loops over the test patches and, for each one, reads the
@@ -100,6 +145,11 @@ alphaevolve:
 
     - Numerical results must stay identical to the seed: same quantization
       scales, activations, and rounding points.
+    - Do not change `braggnn_reference.py`; its `*_on_cpu` procedures and
+      composition procedures are the specification that the schedule must
+      remain equivalent to.
+    - Do not change `gemmini.py`; its hand-written instruction C is a trusted
+      base that Exo cannot prove internally.
     - Never use `unsafe_assert_eq`, `unsafe_disable_check`/
       `unsafe_disable_checks`, or any `unsafe_*` operation, and never construct
       or rewrite `LoopIR` (or `_loopir_proc`) directly: they bypass the
@@ -175,7 +225,8 @@ alphaevolve:
       bounds (fully, or in blocks after `divide_loop`), `reorder_loops` so
       stores are contiguous, and fusing loops. The CPU is an in-order Rocket
       core with no vector extension, so per-iteration loop overhead
-      (increment, compare, branch) is a large share of any such copy.
+      (increment, compare, branch) is a large share of any such copy. The input
+      quantization and NCHW flatten are important remaining CPU work.
     - Reshaping the staged weight buffers at the `braggnn_eval` level (see
       above) so a layer tiles into fewer hardware-loop launches.
     - Offloading more work to Gemmini with `exo.platforms.gemmini` block
@@ -198,9 +249,10 @@ alphaevolve:
     ## Known hardware quirk
 
     `zero_acc_i32` issued right after `ld_acc_i32` on the same accumulator can
-    be partly lost (the zero overtakes the pending DRAM load), leaving stale
-    values. Avoid that sequence; clear a just-loaded accumulator by loading a
-    zero DRAM buffer instead, or by overwriting it with `matmul_i8`.
+    be partly lost (the zero overtakes the pending DRAM load, like
+    ucb-bar/gemmini#67), leaving stale values. Avoid that sequence; clear a
+    just-loaded accumulator by loading a zero DRAM buffer with `ld_acc_i32`,
+    or overwrite it with `matmul_i8`.
 
 monitor:
   enabled: true

@@ -104,19 +104,27 @@ def run_alphaevolve_search(
     if ae_config.get("engine_id") == "GE_APP_ID":
         ae_config["engine_id"] = os.environ.get("GE_APP_ID", "")
 
-    # Tell the SW search what hardware it's actually scheduling against this
-    # attempt -- gemmini_params.h is the C-level source of truth the HW LLM
-    # is required to keep in sync with Configs.scala (see gemmini.md).
+    # Tell the SW search which deployed hardware it is scheduling against.
     if hw_context is None:
         hw_context = get(
             read_gemmini_params_h.options(resources={"manager": 0.05}).chia_remote()
         )
+    if hw_change_summary:
+        hardware_heading = "## Current Gemmini hardware (this co-design attempt)"
+        hardware_description = (
+            "gemmini_params.h, the C-level hardware constants for this build:"
+        )
+    else:
+        hardware_heading = "## Current fixed Gemmini hardware"
+        hardware_description = (
+            "gemmini_params.h, the C-level hardware constants for the deployed "
+            "FireSim bitstream:"
+        )
     base_problem_description = ae_config.get("problem_description", "")
     ae_config["problem_description"] = (
         f"{base_problem_description}\n\n"
-        "## Current Gemmini hardware (this attempt)\n\n"
-        "gemmini_params.h, the C-level hardware constants kept in sync with "
-        "Configs.scala for this build:\n\n"
+        f"{hardware_heading}\n\n"
+        f"{hardware_description}\n\n"
         f"```c\n{hw_context}\n```\n\n"
         "## The `gemmini` helper module (read-only)\n\n"
         "gemmini.py, imported by the program as `from gemmini import ...`. It is "
