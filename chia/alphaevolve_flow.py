@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 @ChiaFunction(resources={"evolver": 0.01})
+def _read_evolver_env(names: list) -> dict:
+    """Env vars as the evolver container sees them. cluster.yaml passes
+    GOOGLE_CLOUD_PROJECT / GE_APP_ID into that container; the job driver does
+    not have them, because .env is not shipped with the job."""
+    return {name: os.environ.get(name, "") for name in names}
+
+
+@ChiaFunction(resources={"evolver": 0.01})
 def _read_eval_log(output_dir: str) -> str:
     path = os.path.join(output_dir, "chia_eval_log.jsonl")
     if not os.path.exists(path):
@@ -80,6 +88,13 @@ def run_alphaevolve_search(
     except ValueError:
         pass
 
+    # Must run before the EvolverNode actor below takes the whole evolver resource.
+    evolver_env = get(
+        _read_evolver_env.options(resources={"evolver": 0.01}).chia_remote(
+            ["GOOGLE_CLOUD_PROJECT", "GE_APP_ID"]
+        )
+    )
+
     evaluator = BraggnnEvaluator(
         firesim_ready=firesim_ready,
         output_dir=eval_dir,
@@ -101,9 +116,9 @@ def run_alphaevolve_search(
 
     ae_config = config_dict.setdefault("alphaevolve", {})
     if ae_config.get("project_id") == "GOOGLE_CLOUD_PROJECT":
-        ae_config["project_id"] = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+        ae_config["project_id"] = evolver_env["GOOGLE_CLOUD_PROJECT"]
     if ae_config.get("engine_id") == "GE_APP_ID":
-        ae_config["engine_id"] = os.environ.get("GE_APP_ID", "")
+        ae_config["engine_id"] = evolver_env["GE_APP_ID"]
 
     # Tell the SW search which deployed hardware it is scheduling against.
     if hw_context is None:
