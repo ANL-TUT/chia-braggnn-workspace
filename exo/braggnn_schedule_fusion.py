@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 from braggnn_reference import (
     CONV1_DIM,
     CONV1_FILTERS,
@@ -61,11 +63,9 @@ from exo.API_scheduling import (
     simplify,
     stage_mem,
 )
+from exo.libs.memories import DRAM_STATIC, GEMM_ACCUM, GEMM_SCRATCH
 from exo.platforms.gemmini import old_fission_after
 from gemmini import (
-    DRAM_ALIGNED,
-    GEMM_ACCUM_FIXED,
-    GEMM_SCRATCH_FIXED,
     fence,
     ld_acc_i32_repeat,
     ld_acc_i32_repeat_v2,
@@ -81,11 +81,69 @@ from gemmini import (
     make_loop_softmax,
     matmul_acc_i8_trans_b,
     matmul_acc_i8_trans_b_v2,
-    st_acc_i8_relu,
-    st_acc_i8_relu_v2,
+    st_acc_i8_act,
+    st_acc_i8_act_v2,
 )
 
 NLB_ROW_TILE = 8
+
+
+class GEMM_SCRATCH_FIXED(GEMM_SCRATCH):
+    addresses: ClassVar[dict[str, int]] = {
+        "input_tmp": 1,
+        "input_tmp_1": 1,
+        "weights_tmp": 4096,
+        "weights_tmp_1": 4096,
+    }
+
+    @classmethod
+    def global_(cls):
+        return "#include <stdint.h>\n#include <include/gemmini.h>"
+
+    @classmethod
+    def alloc(cls, new_name, prim_type, shape, srcinfo):
+        try:
+            addr = cls.addresses[new_name]
+        except KeyError as e:
+            raise RuntimeError(f"No fixed scratchpad address for {new_name}") from e
+        return f"{prim_type} *{new_name} = ({prim_type} *)(uintptr_t){addr}u;"
+
+    @classmethod
+    def free(cls, new_name, prim_type, shape, srcinfo):
+        return ""
+
+
+class GEMM_ACCUM_FIXED(GEMM_ACCUM):
+    addresses: ClassVar[dict[str, int]] = {
+        "res": 0x80000000,
+        "res_1": 0x80000000,
+    }
+
+    @classmethod
+    def global_(cls):
+        return "#include <stdint.h>\n#include <include/gemmini.h>"
+
+    @classmethod
+    def alloc(cls, new_name, prim_type, shape, srcinfo):
+        try:
+            addr = cls.addresses[new_name]
+        except KeyError as e:
+            raise RuntimeError(f"No fixed accumulator address for {new_name}") from e
+        return f"{prim_type} *{new_name} = ({prim_type} *)(uintptr_t)0x{addr:08x}u;"
+
+    @classmethod
+    def free(cls, new_name, prim_type, shape, srcinfo):
+        return ""
+
+
+def hoist_acc_scale(p, n_lifts):
+    p = lift_alloc(p, "tmp_scale : _", n_lifts=n_lifts)
+    while not isinstance(p.find("tmp_scale = _").prev(), InvalidCursor):
+        p = reorder_stmts(p, p.find("tmp_scale = _").expand(1, 0))
+    p = fission(p, p.find("tmp_scale = _").after(), n_lifts=n_lifts)
+    for _ in range(n_lifts):
+        p = remove_loop(p, p.find("tmp_scale = _").parent())
+    return p
 
 
 def fence_after(p, pattern):
@@ -165,7 +223,7 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
         f"weights[0:{k}, 0:{k}, 0:{in_ch}, 0:{out_ch}]",
         ohwi,
     )
-    gemmini = set_memory(gemmini, f"{ohwi}: _", DRAM_ALIGNED)
+    gemmini = set_memory(gemmini, f"{ohwi}: _", DRAM_STATIC)
     gemmini = rearrange_dim(gemmini, f"{ohwi}: _", [0, 1, 3, 2])
     gemmini = simplify(gemmini)
     gemmini = stage_mem(
@@ -296,9 +354,10 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
         gemmini = inline_window(gemmini, "C = _")
         gemmini = simplify(gemmini)
 
-    gemmini = replace(gemmini, "for ocol in _:_ #0", st_acc_i8_relu)
-    gemmini = call_eqv(gemmini, st_acc_i8_relu, st_acc_i8_relu_v2)
-    gemmini = inline(gemmini, st_acc_i8_relu_v2)
+    gemmini = hoist_acc_scale(gemmini, 4)
+    gemmini = replace(gemmini, "for ocol in _:_ #0", st_acc_i8_act)
+    gemmini = call_eqv(gemmini, st_acc_i8_act, st_acc_i8_act_v2)
+    gemmini = inline(gemmini, st_acc_i8_act_v2)
     gemmini = inline_window(gemmini, "src = _")
     gemmini = inline_window(gemmini, "dst = _")
     gemmini = simplify(gemmini)
@@ -310,7 +369,7 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
     gemmini = hoist_config(gemmini, "config_matmul_trans_b(_)", 5)
     gemmini = delete_config(gemmini, "config_matmul_trans_b(_) #1")
     gemmini = hoist_config_after_store(
-        gemmini, "config_st_i8_relu(_)", 2, 0
+        gemmini, "config_st_acc_i8(_)", 2, 0
     )
     gemmini = insert_noop_call(
         gemmini, gemmini.find_loop("orow").after(), fence, []
@@ -449,14 +508,6 @@ def schedule_eval():
     gemmini = inline(gemmini, "braggnn_inference(_)")
     for buf in ("conv2_weights_ohwi", "conv3_weights_ohwi"):
         gemmini = lift_weight_transpose(gemmini, buf)
-    for buf in (
-        "conv2_bias_",
-        "conv3_bias_",
-        "nlb_out",
-        "conv2_out",
-        "conv3_out",
-    ):
-        gemmini = set_memory(gemmini, f"{buf}: _", DRAM_ALIGNED)
     return gemmini
 
 

@@ -24,17 +24,21 @@ from braggnn_reference import (
     fc_output_cpu,
     nlb_cpu,
 )
+from exo.API_cursors import InvalidCursor
 from exo.API_scheduling import (
     call_eqv,
     commute_expr,
     divide_loop,
     expand_dim,
     extract_subproc,
+    fission,
     inline,
     insert_noop_call,
+    lift_alloc,
     mult_dim,
     mult_loops,
     rearrange_dim,
+    remove_loop,
     rename,
     reorder_loops,
     reorder_stmts,
@@ -67,75 +71,35 @@ from gemmini import (
     matmul_acc_i8_trans_b,
     st_acc_i8_act,
     st_acc_i8_no_act,
-    st_acc_i8_relu,
 )
 
 NLB_ROWS = CONV1_DIM * CONV1_DIM
 NLB_SOFTMAX_TILE = 72
 
 
+st_acc_i8_act_decls_first = rename(st_acc_i8_act, "st_acc_i8_act_decls_first")
 for _pair in (
-    "src_tmp = _ ; tmp_res1 : _",
-    "acc_scale(_) ; tmp_res2 : _",
-    "src_tmp = _ ; tmp_res2 : _",
+    "src_tmp = _ ; tmp : _",
+    "acc_scale(_) ; tmp2 : _",
+    "src_tmp = _ ; tmp2 : _",
 ):
-    st_acc_i8_act = reorder_stmts(st_acc_i8_act, st_acc_i8_act.find(_pair))
+    st_acc_i8_act_decls_first = reorder_stmts(
+        st_acc_i8_act_decls_first, st_acc_i8_act_decls_first.find(_pair)
+    )
+
+
+def hoist_acc_scale(p, n_lifts):
+    p = lift_alloc(p, "tmp_scale : _", n_lifts=n_lifts)
+    while not isinstance(p.find("tmp_scale = _").prev(), InvalidCursor):
+        p = reorder_stmts(p, p.find("tmp_scale = _").expand(1, 0))
+    p = fission(p, p.find("tmp_scale = _").after(), n_lifts=n_lifts)
+    for _ in range(n_lifts):
+        p = remove_loop(p, p.find("tmp_scale = _").parent())
+    return p
 
 
 def fence_after(p, pattern):
     return insert_noop_call(p, p.find(pattern).after(), fence, [])
-
-
-def sched_fc_flat_lowlevel(cpu, in_ch, in_h, in_w, out_features, act=False):
-    name = cpu.name()[: -len("_cpu")]
-    assert in_w <= 16
-    assert out_features <= 16
-
-    gemmini = rename(cpu, name)
-    gemmini = old_lift_alloc(gemmini, "res : _", n_lifts=1)
-    gemmini = expand_dim(gemmini, "res : _", "16", "0")
-    gemmini = rearrange_dim(gemmini, "res : _", [1, 0])
-    gemmini = old_fission_after(gemmini, "res[_] = _", n_lifts=1)
-    gemmini = old_fission_after(gemmini, "for kch in _:_", n_lifts=1)
-    gemmini = old_reorder(gemmini, "j kch")
-    gemmini = old_reorder(gemmini, "j krow")
-    gemmini = old_lift_alloc(gemmini, "w_s : _", n_lifts=1, size=16)
-    gemmini = old_lift_alloc(gemmini, "w_s : _", n_lifts=1)
-    gemmini = old_lift_alloc(gemmini, "i_s : _", n_lifts=1)
-    gemmini = old_lift_alloc(gemmini, "i_s : _", n_lifts=1, keep_dims=False)
-    gemmini = expand_dim(gemmini, "i_s : _", "16", "0")
-    gemmini = rearrange_dim(gemmini, "i_s : _", [1, 0])
-    gemmini = old_fission_after(gemmini, "w_s[_] = _", n_lifts=2)
-    gemmini = old_fission_after(gemmini, "i_s[_] = _", n_lifts=2)
-    gemmini = divide_loop(gemmini, "j #3", 1, ["j_o", "j_i"], perfect=True)
-    gemmini = divide_loop(gemmini, "j #2", 1, ["j_o", "j_i"], perfect=True)
-    gemmini = simplify(gemmini)
-    gemmini = reorder_stmts(gemmini, gemmini.find("a2 : _").expand(0, 1))
-    gemmini = reorder_stmts(gemmini, gemmini.find("a2 = _").expand(0, 1))
-    gemmini = commute_expr(gemmini, "a2 * b2")
-    gemmini = rewrite_expr(gemmini, gemmini.find("b2 = _").rhs().idx()[0], "j_o")
-    gemmini = rewrite_expr(gemmini, gemmini.find("a2 = _").rhs().idx()[1], "j_i")
-    gemmini = rewrite_expr(gemmini, gemmini.find("res[_] += _").idx()[0], "j_o")
-    gemmini = rewrite_expr(gemmini, gemmini.find("res[_] += _").idx()[1], "j_i")
-    gemmini = rewrite_expr(gemmini, gemmini.find("src_tmp = _").rhs().idx()[0], "j_o")
-    gemmini = rewrite_expr(gemmini, gemmini.find("src_tmp = _").rhs().idx()[1], "j_i")
-    gemmini = rewrite_expr(gemmini, gemmini.find("output[_] = _").idx()[0], "j_o")
-    gemmini = rewrite_expr(gemmini, gemmini.find("output[_] = _").idx()[1], "j_i")
-    gemmini = set_memory(gemmini, "res : _", GEMM_ACCUM)
-    gemmini = set_memory(gemmini, "w_s : _", GEMM_SCRATCH)
-    gemmini = set_memory(gemmini, "i_s : _", GEMM_SCRATCH)
-    gemmini = replace(gemmini, "for j in _:_ #0", ld_acc_i32_col)
-    gemmini = replace(gemmini, "for j in _:_ #0", ld_i8_id1)
-    gemmini = replace(gemmini, "for kcol in _:_ #0", ld_i8_col)
-    gemmini = replace(gemmini, "for j_o in _:_ #0", matmul_acc_i8)
-    if act:
-        gemmini = replace(gemmini, "for j_o in _:_ #0", st_acc_i8_relu)
-        gemmini = fence_after(gemmini, "st_acc_i8_relu(_)")
-    else:
-        gemmini = replace(gemmini, "for j_o in _:_ #0", st_acc_i8_no_act)
-        gemmini = fence_after(gemmini, "st_acc_i8_no_act(_)")
-
-    return gemmini
 
 
 def sched_fc_lowlevel(cpu, in_ch, out_features, act=False):
@@ -181,8 +145,9 @@ def sched_fc_lowlevel(cpu, in_ch, out_features, act=False):
     gemmini = replace(gemmini, "for kch in _:_ #0", ld_i8_col)
     gemmini = replace(gemmini, "for j_o in _:_ #0", matmul_acc_i8)
     if act:
-        gemmini = replace(gemmini, "for j_o in _:_ #0", st_acc_i8_relu)
-        gemmini = fence_after(gemmini, "st_acc_i8_relu(_)")
+        gemmini = hoist_acc_scale(gemmini, 2)
+        gemmini = replace(gemmini, "for j_o in _:_ #0", st_acc_i8_act)
+        gemmini = fence_after(gemmini, "st_acc_i8_act(_)")
     else:
         gemmini = replace(gemmini, "for j_o in _:_ #0", st_acc_i8_no_act)
         gemmini = fence_after(gemmini, "st_acc_i8_no_act(_)")
@@ -232,7 +197,8 @@ def sched_conv_lowlevel(cpu, in_dim, in_ch, out_ch, k, act=False):
     gemmini = old_reorder(gemmini, "kch_i och_i")
     gemmini = replace(gemmini, "for ocol in _:_ #0", matmul_acc_i8)
     if act:
-        gemmini = replace(gemmini, "for ocol in _:_ #0", st_acc_i8_relu)
+        gemmini = hoist_acc_scale(gemmini, 2)
+        gemmini = replace(gemmini, "for ocol in _:_ #0", st_acc_i8_act)
     else:
         gemmini = replace(gemmini, "for ocol in _:_ #0", st_acc_i8_no_act)
     gemmini = insert_noop_call(gemmini, gemmini.find_loop("orow").after(), fence, [])
@@ -488,7 +454,7 @@ def schedule_nlb():
     ra2 = replace(ra2, "for i2 in _:_ #0", ld_acc_i8_scaled)
     ra2 = fence_after(ra2, "ld_acc_i8_scaled(_)")
     ra2 = replace(ra2, "for i2 in _:_ #0", ld_acc_i8_scaled_acc)
-    ra2 = replace(ra2, "for i2 in _:_ #0", st_acc_i8_act)
+    ra2 = replace(ra2, "for i2 in _:_ #0", st_acc_i8_act_decls_first)
     ra2 = insert_noop_call(ra2, ra2.find_loop("i1").after(), fence, [])
 
     for old, new in (
@@ -588,8 +554,9 @@ def sched_fc1_flat(gemmini):
         gemmini = replace(gemmini, "for j in _:_ #0", ld_i8_id1)
         gemmini = replace(gemmini, "for k_i in _:_ #0", ld_i8_col)
         gemmini = replace(gemmini, "for j_o in _:_ #0", matmul_acc_i8)
-    gemmini = replace(gemmini, "for j_o in _:_ #0", st_acc_i8_relu)
-    return fence_after(gemmini, "st_acc_i8_relu(_)")
+    gemmini = hoist_acc_scale(gemmini, 2)
+    gemmini = replace(gemmini, "for j_o in _:_ #0", st_acc_i8_act)
+    return fence_after(gemmini, "st_acc_i8_act(_)")
 
 
 def schedule_eval():
