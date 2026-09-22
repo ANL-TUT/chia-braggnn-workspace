@@ -40,7 +40,11 @@ BUILD_TIMEOUT_SECONDS = 600
 
 
 @ChiaFunction(resources={"exo_build": 1})
-def prepare_work_dir(work_dir: str, source_dir: str | None = None) -> None:
+def prepare_work_dir(
+    work_dir: str,
+    source_dir: str | None = None,
+    schedule_name: str = "braggnn_schedule.py",
+) -> None:
     """Seed work_dir with braggnn_schedule.py from source_dir (default: the shipped one).
 
     Also copies the C harness (with Gemmini headers and allocators) into
@@ -60,7 +64,7 @@ def prepare_work_dir(work_dir: str, source_dir: str | None = None) -> None:
         SHIPPED_EXO_DIR / "braggnn_schedule.py", work / "braggnn_schedule.orig.py"
     )
     source = Path(source_dir) if source_dir else SHIPPED_EXO_DIR
-    shutil.copy(source / "braggnn_schedule.py", work / "braggnn_schedule.py")
+    shutil.copy(source / schedule_name, work / "braggnn_schedule.py")
     shutil.copy(SHIPPED_EXO_DIR / "gemmini.py", work / "gemmini.py")
     shutil.copy(SHIPPED_EXO_DIR / "braggnn_reference.py", work / "braggnn_reference.py")
     shutil.copy(

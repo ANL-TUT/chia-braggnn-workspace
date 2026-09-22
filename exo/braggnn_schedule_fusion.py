@@ -34,7 +34,9 @@ from braggnn_reference import (
     nlb_softmax_cpu,
     resadd_relu_cpu,
 )
+from exo.API_cursors import ForCursor, InvalidCursor
 from exo.API_scheduling import (
+    autofission,
     call_eqv,
     delete_buffer,
     delete_config,
@@ -61,29 +63,26 @@ from exo.API_scheduling import (
     unroll_loop,
 )
 from exo.libs.memories import GEMM_ACCUM, GEMM_SCRATCH
-from exo.platforms.gemmini import (
-    matmul_acc_i8,
-    matmul_acc_i8_v2,
-)
+from exo.platforms.gemmini import old_fission_after
 from gemmini import (
+    DRAM_ALIGNED,
     fence,
-    ld_acc_i32_block_repeat,
-    ld_acc_i32_block_repeat_v2,
     ld_acc_i32_repeat,
     ld_acc_i32_repeat_v2,
     ld_i8_block_id1,
     ld_i8_block_id1_v2,
     ld_i8_block_id2,
     ld_i8_block_id2_v2,
-    ld_i8_id2,
-    ld_i8_id2_v2,
     make_loop_conv_ws,
     make_loop_matmul,
     make_loop_matmul_fc,
     make_loop_matmul_trans_b,
     make_loop_resadd,
     make_loop_softmax,
+    matmul_acc_i8_trans_b,
+    matmul_acc_i8_trans_b_v2,
     st_acc_i8_relu,
+    st_acc_i8_relu_v2,
 )
 
 NLB_ROW_TILE = 8
@@ -150,6 +149,41 @@ def hoist_config(p, pattern, n_lifts, n_reorders=0):
     return p
 
 
+def hoist_config_after_store(p, pattern, n_lifts, n_reorders=0):
+    p = old_fission_after(p, pattern, n_lifts=n_lifts)
+    for _ in range(n_lifts):
+        parent = p.find(pattern).parent()
+        if not isinstance(parent, ForCursor):
+            break
+        p = remove_loop(p, parent)
+    for _ in range(n_reorders):
+        p = reorder_stmts(p, p.find(pattern).expand(1, 0))
+    return p
+
+
+def outer_copy_loop(p, pattern, patch_loop="p"):
+    c = p.find(pattern)
+    while isinstance(c.parent(), ForCursor) and c.parent().name() != patch_loop:
+        c = c.parent()
+    return c
+
+
+def lift_weight_transpose(p, buf, patch_loop="p"):
+    p = lift_alloc(p, f"{buf}: _", n_lifts=1)
+    while True:
+        c = outer_copy_loop(p, f"{buf}[_] = _", patch_loop)
+        if isinstance(c.prev(), InvalidCursor):
+            break
+        p = reorder_stmts(p, c.expand(1, 0))
+    p = autofission(
+        p, outer_copy_loop(p, f"{buf}[_] = _", patch_loop).after(), n_lifts=1
+    )
+    parent = outer_copy_loop(p, f"{buf}[_] = _", patch_loop).parent()
+    if isinstance(parent, ForCursor) and parent.name() == patch_loop:
+        p = remove_loop(p, parent)
+    return p
+
+
 def sched_conv(cpu, in_dim, in_ch, out_ch, k, act=False):
     name = cpu.name()[: -len("_cpu")]
 
@@ -171,7 +205,18 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
     assert in_ch % kch_blk == 0
     assert out_ch % och_blk == 0
 
+    ohwi = f"{name}_weights_ohwi"
+
     gemmini = rename(cpu, name)
+    gemmini = stage_mem(
+        gemmini,
+        "for orow in _:_",
+        f"weights[0:{k}, 0:{k}, 0:{in_ch}, 0:{out_ch}]",
+        ohwi,
+    )
+    gemmini = set_memory(gemmini, f"{ohwi}: _", DRAM_ALIGNED)
+    gemmini = rearrange_dim(gemmini, f"{ohwi}: _", [0, 1, 3, 2])
+    gemmini = simplify(gemmini)
     gemmini = stage_mem(
         gemmini,
         "for orow in _:_",
@@ -181,7 +226,7 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
     gemmini = stage_mem(
         gemmini,
         "for orow in _:_",
-        f"weights[0:{k}, 0:{k}, 0:{in_ch}, 0:{out_ch}]",
+        f"{ohwi}[0:{k}, 0:{k}, 0:{out_ch}, 0:{in_ch}]",
         "weights_tmp",
     )
     gemmini = simplify(gemmini)
@@ -211,15 +256,15 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
         gemmini = reorder_loops(gemmini, "ocol " + loop)
 
     gemmini = divide_loop(
-        gemmini, "i3", och_blk, ["i3_o", "i3_i"], perfect=True
+        gemmini, "i3 #1", kch_blk, ["i3_o", "i3_i"], perfect=True
     )
-    gemmini = divide_dim(gemmini, "weights_tmp: _", 3, och_blk)
+    gemmini = divide_dim(gemmini, "weights_tmp: _", 3, kch_blk)
+    gemmini = divide_loop(
+        gemmini, "i2 #2", och_blk, ["i2_o", "i2_i"], perfect=True
+    )
+    gemmini = divide_dim(gemmini, "weights_tmp: _", 2, och_blk)
     gemmini = divide_loop(
         gemmini, "i2 #1", kch_blk, ["i2_o", "i2_i"], perfect=True
-    )
-    gemmini = divide_dim(gemmini, "weights_tmp: _", 2, kch_blk)
-    gemmini = divide_loop(
-        gemmini, "i2", kch_blk, ["i2_o", "i2_i"], perfect=True
     )
     gemmini = divide_dim(gemmini, "input_tmp: _", 2, kch_blk)
     gemmini = simplify(gemmini)
@@ -228,7 +273,6 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
         gemmini, "weights_tmp: _", [0, 1, 2, 4, 3, 5]
     )
     if och_blk < 16:
-        gemmini = resize_dim(gemmini, "weights_tmp: _", 5, 16, 0)
         gemmini = resize_dim(gemmini, "res: _", 3, 16, 0)
         gemmini = simplify(gemmini)
 
@@ -236,21 +280,15 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
     gemmini = set_memory(gemmini, "weights_tmp: _", GEMM_SCRATCH_FIXED)
     gemmini = set_memory(gemmini, "res: _", GEMM_ACCUM_FIXED)
 
-    gemmini = replace(gemmini, "for i1 in _:_ #0", ld_i8_block_id1)
+    gemmini = replace(gemmini, "for i1 in _:_ #1", ld_i8_block_id1)
     gemmini = call_eqv(gemmini, ld_i8_block_id1, ld_i8_block_id1_v2)
     gemmini = inline(gemmini, ld_i8_block_id1_v2)
     gemmini = inline_window(gemmini, "src = _")
     gemmini = inline_window(gemmini, "dst = _")
     gemmini = simplify(gemmini)
-    if och_blk == 16:
-        gemmini = replace(gemmini, "for i2_i in _:_ #0", ld_i8_block_id2)
-        gemmini = call_eqv(gemmini, ld_i8_block_id2, ld_i8_block_id2_v2)
-        gemmini = inline(gemmini, ld_i8_block_id2_v2)
-    else:
-        gemmini = unroll_loop(gemmini, "i3_o")
-        gemmini = replace(gemmini, "for i2_i in _:_ #0", ld_i8_id2)
-        gemmini = call_eqv(gemmini, ld_i8_id2, ld_i8_id2_v2)
-        gemmini = inline(gemmini, ld_i8_id2_v2)
+    gemmini = replace(gemmini, "for i2_i in _:_ #0", ld_i8_block_id2)
+    gemmini = call_eqv(gemmini, ld_i8_block_id2, ld_i8_block_id2_v2)
+    gemmini = inline(gemmini, ld_i8_block_id2_v2)
     gemmini = inline_window(gemmini, "src = _")
     gemmini = inline_window(gemmini, "dst = _")
     gemmini = simplify(gemmini)
@@ -259,50 +297,42 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
     gemmini = inline_assign(gemmini, "i_s = _")
     gemmini = delete_buffer(gemmini, "w_s: _")
     gemmini = delete_buffer(gemmini, "i_s: _")
-    if out_ch > 16:
-        gemmini = reorder_loops(gemmini, "och_o ocol")
-        gemmini = replace(
-            gemmini, "for ocol in _:_ #0", ld_acc_i32_block_repeat
-        )
-        gemmini = call_eqv(
-            gemmini, ld_acc_i32_block_repeat, ld_acc_i32_block_repeat_v2
-        )
-        gemmini = inline(gemmini, ld_acc_i32_block_repeat_v2)
-    else:
-        gemmini = replace(gemmini, "for ocol in _:_ #0", ld_acc_i32_repeat)
-        gemmini = call_eqv(gemmini, ld_acc_i32_repeat, ld_acc_i32_repeat_v2)
-        gemmini = inline(gemmini, ld_acc_i32_repeat_v2)
+    gemmini = replace(gemmini, "for ocol in _:_ #0", ld_acc_i32_repeat)
+    gemmini = call_eqv(gemmini, ld_acc_i32_repeat, ld_acc_i32_repeat_v2)
+    gemmini = inline(gemmini, ld_acc_i32_repeat_v2)
     gemmini = inline_window(gemmini, "src = _")
     gemmini = inline_window(gemmini, "dst = _")
     gemmini = simplify(gemmini)
-    gemmini = replace(gemmini, "for ocol in _:_ #0", matmul_acc_i8)
-    gemmini = call_eqv(gemmini, matmul_acc_i8, matmul_acc_i8_v2)
-    gemmini = inline(gemmini, matmul_acc_i8_v2)
+    gemmini = replace(gemmini, "for ocol in _:_ #0", matmul_acc_i8_trans_b)
+    gemmini = call_eqv(
+        gemmini, matmul_acc_i8_trans_b, matmul_acc_i8_trans_b_v2
+    )
+    gemmini = inline(gemmini, matmul_acc_i8_trans_b_v2)
     gemmini = inline_window(gemmini, "A = _")
     gemmini = inline_window(gemmini, "B = _")
     gemmini = inline_window(gemmini, "C = _")
     gemmini = simplify(gemmini)
     gemmini = replace(gemmini, "for ocol in _:_ #0", st_acc_i8_relu)
+    gemmini = call_eqv(gemmini, st_acc_i8_relu, st_acc_i8_relu_v2)
+    gemmini = inline(gemmini, st_acc_i8_relu_v2)
+    gemmini = inline_window(gemmini, "src = _")
+    gemmini = inline_window(gemmini, "dst = _")
+    gemmini = simplify(gemmini)
 
     if out_ch < 16:
         for _ in range(3):
             gemmini = unroll_loop(gemmini, "och_o")
 
     gemmini = hoist_config(gemmini, "config_ld_i8_block_id1(_)", 1)
-    weight_config = (
-        "config_ld_i8_block_id2(_)"
-        if och_blk == 16
-        else "config_ld_i8_id2(_)"
-    )
-    gemmini = hoist_config(gemmini, weight_config, 3, 1)
-    bias_config = (
-        "config_ld_block_repeat(_)"
-        if out_ch > 16
-        else "config_ld_repeat(_)"
-    )
-    gemmini = hoist_config(gemmini, bias_config, 1, 2)
+    gemmini = hoist_config(gemmini, "config_ld_i8_block_id2(_)", 3, 1)
     gemmini = hoist_config(
-        gemmini, "config_matmul(_)", 5 if out_ch > 16 else 4, 3
+        gemmini, "config_ld_repeat(_)", 2 if out_ch > 16 else 1, 2
+    )
+    gemmini = hoist_config(
+        gemmini, "config_matmul_trans_b(_)", 5 if out_ch > 16 else 4, 3
+    )
+    gemmini = hoist_config_after_store(
+        gemmini, "config_st_i8_relu(_)", 2 if out_ch > 16 else 1, 4
     )
 
     for loop in ("kch_o", "kcol"):
@@ -313,7 +343,7 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
     gemmini = fuse(gemmini, "orow #1", "orow #2")
     gemmini = fuse(gemmini, "orow", "orow #1")
     if out_ch > 16:
-        gemmini = fuse(gemmini, "och_o", "och_o #1")
+        gemmini = fuse(gemmini, "och_o #1", "och_o #2")
 
     gemmini = insert_noop_call(gemmini, gemmini.find_loop("orow").after(), fence, [])
 
@@ -432,7 +462,7 @@ def schedule_braggnn():
     gemmini = call_eqv(gemmini, "conv3_cpu(_)", conv3)
     gemmini = inline(gemmini, "conv2(_)")
     gemmini = inline(gemmini, "conv3(_)")
-    gemmini = delete_config(gemmini, "config_matmul(_) #1")
+    gemmini = delete_config(gemmini, "config_matmul_trans_b(_) #1")
     gemmini = call_eqv(gemmini, "fc1_cpu(_)", fc1)
     gemmini = call_eqv(gemmini, "fc2_cpu(_)", fc2)
     gemmini = call_eqv(gemmini, "fc3_cpu(_)", fc3)
@@ -448,6 +478,16 @@ def schedule_eval():
     gemmini = rename(braggnn_eval_cpu, "braggnn_eval")
     gemmini = call_eqv(gemmini, "braggnn_inference_cpu(_)", braggnn_inference)
     gemmini = inline(gemmini, "braggnn_inference(_)")
+    for buf in ("conv2_weights_ohwi", "conv3_weights_ohwi"):
+        gemmini = lift_weight_transpose(gemmini, buf)
+    for buf in (
+        "conv2_bias_",
+        "conv3_bias_",
+        "nlb_out",
+        "conv2_out",
+        "conv3_out",
+    ):
+        gemmini = set_memory(gemmini, f"{buf}: _", DRAM_ALIGNED)
     return gemmini
 
 
