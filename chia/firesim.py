@@ -30,9 +30,6 @@ from constants import (
     FIRESIM_DEPLOY_DIR,
     FIRESIM_HWDB_ENTRIES_DIR,
     FIRESIM_HWDB_ENTRY_NAME,
-    FIRESIM_INFRASETUP_TIMEOUT_SECONDS,
-    FIRESIM_KILL_TIMEOUT_SECONDS,
-    FIRESIM_RUNWORKLOAD_TIMEOUT_SECONDS,
     GEMMINI_PARAMS_H_PATH,
 )
 from dumper import Dumper
@@ -85,193 +82,22 @@ def bash(script: str, timeout: int) -> subprocess.CompletedProcess:
     )
 
 
-def _firesim_kill() -> str:
-    """Best-effort `firesim kill`: tears down any simulation still holding the
-    FPGA/XDMA module (e.g. from a hung or timed-out runworkload) so the next
-    infrasetup can unload the driver. Never raises."""
-    try:
-        r = bash(f"firesim kill -a {HWDB} -r {BUILD_RECIPES}", FIRESIM_KILL_TIMEOUT_SECONDS)
-        return r.stdout + r.stderr
-    except Exception as e:  # noqa: BLE001 -- cleanup must not mask the real result
-        return f"[chia] firesim kill failed: {type(e).__name__}: {e}"
-
-
-# ── Fast relaunch: infrasetup once per hardware build, then only swap the boot
-# binary and `firesim runworkload` per candidate. infrasetup is the slow, fragile
-# step (build driver, unload XDMA, flash the FPGA, reload XDMA); the bare-metal
-# ELF is passed to the sim driver as `+prog0=<name>` from the sim slot directory,
-# so a new candidate only needs that one file replaced. Anything we cannot verify
-# falls back to the full infrasetup path.
-FIRESIM_FAST_RELAUNCH = os.environ.get("FIRESIM_FAST_RELAUNCH", "1") != "0"
-FIRESIM_INFRASETUP_STAMP = os.path.join(FIRESIM_DEPLOY_DIR, ".chia_infrasetup_stamp")
-_SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20"]
-
-
-def _current_hw_config() -> Optional[str]:
-    """default_hw_config from config_runtime.yaml -- _register_hwdb_entry gives it
-    a unique timestamped name per hardware build, so it identifies which
-    bitstream the last infrasetup flashed."""
-    try:
-        with open(FIRESIM_CONFIG_RUNTIME_PATH) as f:
-            m = re.search(r"(?m)^\s*default_hw_config:\s*(\S+)", f.read())
-        return m.group(1) if m else None
-    except OSError:
-        return None
-
-
-def _infrasetup_is_current() -> bool:
-    hw = _current_hw_config()
-    if hw is None:
-        return False
-    try:
-        with open(FIRESIM_INFRASETUP_STAMP) as f:
-            return f.read().strip() == hw
-    except OSError:
-        return False
-
-
-def _write_infrasetup_stamp() -> None:
-    hw = _current_hw_config()
-    if hw:
-        with open(FIRESIM_INFRASETUP_STAMP, "w") as f:
-            f.write(hw)
-
-
-def _clear_infrasetup_stamp() -> None:
-    try:
-        os.remove(FIRESIM_INFRASETUP_STAMP)
-    except OSError:
-        pass
-
-
-def _runfarm_target() -> tuple:
-    """(host, sim_dir) of the run farm host: env overrides FIRESIM_RUNFARM_HOST /
-    FIRESIM_SIM_DIR, else parsed from config_runtime.yaml (recipe_arg_overrides)
-    and its base recipe."""
-    import yaml
-
-    host = os.environ.get("FIRESIM_RUNFARM_HOST")
-    sim_dir = os.environ.get("FIRESIM_SIM_DIR")
-    if host and sim_dir:
-        return host, sim_dir
-    with open(FIRESIM_CONFIG_RUNTIME_PATH) as f:
-        cfg = yaml.safe_load(f)
-    run_farm = cfg.get("run_farm", {})
-    overrides = run_farm.get("recipe_arg_overrides") or {}
-    hosts = overrides.get("run_farm_hosts_to_use")
-    sim_dir = sim_dir or overrides.get("default_simulation_dir")
-    if not (host or hosts) or not sim_dir:
-        with open(os.path.join(FIRESIM_DEPLOY_DIR, run_farm["base_recipe"])) as f:
-            base_args = (yaml.safe_load(f) or {}).get("args", {})
-        hosts = hosts or base_args.get("run_farm_hosts_to_use")
-        sim_dir = sim_dir or base_args.get("default_simulation_dir")
-    if not host:
-        first = hosts[0]
-        host = next(iter(first)) if isinstance(first, dict) else str(first)
-    if not (host and sim_dir):
-        raise RuntimeError("cannot determine run farm host / sim dir")
-    return host, sim_dir
-
-
-def _swap_bootbinary() -> tuple:
-    """Copy the freshly staged boot binary over the one already in the run farm's
-    sim slot. Returns (ok, message)."""
-    try:
-        host, sim_dir = _runfarm_target()
-        slot = f"{sim_dir.rstrip('/')}/sim_slot_0"
-        is_local = host.split("@")[-1] in ("localhost", "127.0.0.1")
-
-        def sh(cmd: str):
-            argv = ["bash", "-c", cmd] if is_local else ["ssh", *_SSH_OPTS, host, cmd]
-            return subprocess.run(argv, capture_output=True, text=True, timeout=120)
-
-        # The slot's copy is named "<jobname>-<basename>"; require exactly one.
-        ls = sh(f"ls {slot}/*-{BOOT_BINARY_NAME} {slot}/rsyncdir/*-{BOOT_BINARY_NAME} 2>/dev/null")
-        remote_files = [l for l in ls.stdout.split() if l]
-        in_slot = [p for p in remote_files if "/rsyncdir/" not in p]
-        if len(in_slot) != 1:
-            return False, f"expected one boot binary in {slot}, found {in_slot!r}"
-        for dest in remote_files:
-            if is_local:
-                r = subprocess.run(["cp", str(BOOT_BINARY), dest], capture_output=True, text=True, timeout=120)
-            else:
-                r = subprocess.run(
-                    ["scp", *_SSH_OPTS, str(BOOT_BINARY), f"{host}:{dest}"],
-                    capture_output=True, text=True, timeout=120,
-                )
-            if r.returncode != 0:
-                return False, f"copy to {dest} failed: {r.stderr[-300:]}"
-        return True, f"swapped {os.path.basename(in_slot[0])} on {host}"
-    except Exception as e:  # noqa: BLE001 -- any doubt -> fall back to full infrasetup
-        return False, f"{type(e).__name__}: {e}"
-
-
-# "[user@host] Slot 0, Job <name> completed!" -- printed by the runworkload
-# monitor once the target program has exited, before results are copied back.
-_JOB_COMPLETED_RE = re.compile(r"Slot \d+, Job \S+ completed!")
-
-
 @ChiaFunction(resources={"FPGA": 1})
-def run_workload(elf: bytes) -> RunResult:
+def run_workload(elf: bytes, timeout_seconds: int = 14400) -> RunResult:
     stage_bare_workload(elf)
 
-    print("[firesim] firesim kill (clear leftovers)", flush=True)
-    _firesim_kill()
-
-    fast = False
-    infra_stdout = infra_stderr = ""
-    if FIRESIM_FAST_RELAUNCH and _infrasetup_is_current():
-        ok, msg = _swap_bootbinary()
-        print(f"[firesim] fast relaunch (skip infrasetup): {msg}", flush=True)
-        fast = ok
-    if not fast:
-        print("[firesim] firesim infrasetup", flush=True)
-        _clear_infrasetup_stamp()
-        infrasetup = f"firesim infrasetup -a {HWDB} -r {BUILD_RECIPES}"
-        infra = bash(infrasetup, FIRESIM_INFRASETUP_TIMEOUT_SECONDS)
-        if infra.returncode != 0 and "firesim-remove-xdma-module" in infra.stdout:
-            # XDMA still busy: a previous simulation is holding it. Kill and retry once.
-            print("[firesim] infrasetup hit busy XDMA -- kill + retry", flush=True)
-            _firesim_kill()
-            infra = bash(infrasetup, FIRESIM_INFRASETUP_TIMEOUT_SECONDS)
-        if infra.returncode != 0:
-            return RunResult(
-                returncode=infra.returncode, stdout=infra.stdout, stderr=infra.stderr,
-                uartlogs={},
-            )
-        if FIRESIM_FAST_RELAUNCH:
-            _write_infrasetup_stamp()
-        infra_stdout, infra_stderr = infra.stdout, infra.stderr
-
-    print("[firesim] firesim runworkload", flush=True)
     try:
         done = bash(
+            f"firesim infrasetup -a {HWDB} -r {BUILD_RECIPES} && "
             f"firesim runworkload -a {HWDB} -r {BUILD_RECIPES}",
-            FIRESIM_RUNWORKLOAD_TIMEOUT_SECONDS,
+            timeout_seconds,
         )
         returncode, stdout, stderr = done.returncode, done.stdout, done.stderr
     except subprocess.TimeoutExpired as expired:
-        # The candidate's bare-metal program hung; without this the simulation
-        # keeps the FPGA/XDMA and every later infrasetup fails.
-        _clear_infrasetup_stamp()
-        kill_out = _firesim_kill()
-
-        def text(v):
-            return v.decode(errors="replace") if isinstance(v, bytes) else (v or "")
-
-        return RunResult(
-            returncode=124,
-            stdout=infra_stdout + text(expired.stdout),
-            stderr=(
-                f"[chia] firesim runworkload timed out after "
-                f"{FIRESIM_RUNWORKLOAD_TIMEOUT_SECONDS}s (candidate likely hangs); "
-                f"ran firesim kill:\n{kill_out}"
-            ),
-            uartlogs={},
-        )
-    if returncode != 0 and _JOB_COMPLETED_RE.search(stdout) is None:
-        _clear_infrasetup_stamp()
-        _firesim_kill()
+        returncode = 124
+        killed = bash(f"firesim kill -a {HWDB} -r {BUILD_RECIPES}", 600)
+        stdout = f"{expired.stdout or ''}{killed.stdout}"
+        stderr = f"{expired.stderr or ''}{killed.stderr}"
 
     found = re.search(r"See results in:\s*(\S+)", stdout)
     results_dir = Path(found.group(1)) if found else None
@@ -283,17 +109,11 @@ def run_workload(elf: bytes) -> RunResult:
         if results_dir
         else {}
     )
-    if not any("Avg cycles" in log for log in uartlogs.values()):
-        # A run that produced no result (driver abort, hung sim, crashed program)
-        # can leave the FPGA/XDMA in a bad state, and the fast relaunch skips the
-        # infrasetup that would reset it. Do not trust it next time: force a full
-        # infrasetup (unload/flash/reload XDMA) for the next candidate.
-        _clear_infrasetup_stamp()
 
     return RunResult(
         returncode=returncode,
-        stdout=infra_stdout + stdout,
-        stderr=infra_stderr + stderr,
+        stdout=stdout,
+        stderr=stderr,
         uartlogs=uartlogs,
     )
 
