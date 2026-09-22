@@ -6,7 +6,7 @@
 
 事前に uv (https://docs.astral.sh/uv/) をインストールしておいてください。
 
-ホームディレクトリ直下などにcloneします。
+適当な場所にcloneします。
 
 ```bash
 git clone https://github.com/ANL-TUT/chia-braggnn-workspace.git
@@ -23,12 +23,19 @@ uv pip install -e ./alphaevolve-on-googlecloud -e ./evolve-flows/skydiscover -e 
 ## ジョブ投入
 
 ```bash
-uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- python chia/braggnn_loop.py --iterations 5
+# ベースラインのサイクル数計測
+uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- python chia/braggnn_loop.py --iterations 0
+
+# Fusion版（柳沼君作）のサイクル数計測
+uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- python chia/braggnn_loop.py --iterations 0 --schedule braggnn_schedule_fusion.py
+
+# 実際の改善ループ
+uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- python chia/braggnn_loop.py
 ```
 
 ## システム構成
 
-LLM (OpenCode + Gemini) で `exo/braggnn_exo.py` を最適化するループ
+LLM (OpenCode + Gemini) で `exo/braggnn_schedule.py` を最適化するループ
 
 ```mermaid
 graph TD
@@ -67,7 +74,7 @@ graph TD
 |---|---|---|---|
 | head | 133.15.45.28 | - | `chia/braggnn_loop.py`（ray job driver） |
 | opencode | chia-opencode | `opencode_creds` 1 | OpenCode。Gemini (Vertex AI) を使用 |
-| exo_compiler | chia-exo | `exo_build` 8 | `chia/exo_compiler.py`: 作業ディレクトリ作成、BashTool で LLM が `braggnn_exo.py` を編集、exocc + riscv64 gcc で ELF ビルド |
+| exo_compiler | chia-exo | `exo_build` 8 | `chia/exo_compiler.py`: 作業ディレクトリ作成、BashTool で LLM が `braggnn_schedule.py` を編集、exocc + riscv64 gcc で ELF ビルド |
 | firesim | 133.15.45.113 | `firesim` 1 | `chia/firesim.py`: Alveo U250 / Rocket + Gemmini（`FireSimGemminiRocketConfig`）で実行、avg cycles と PASSED / FAILED を返す |
 
 ## 結果

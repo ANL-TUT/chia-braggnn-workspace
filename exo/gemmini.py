@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
-from exo.API_scheduling import rename
+from exo.API_scheduling import (
+    bind_config,
+    make_instr,
+    rename,
+    reorder_stmts,
+    replace,
+    simplify,
+    write_config,
+)
 from exo.core.extern import Extern, _EErr
 from exo.core.LoopIR import T
 from exo.libs.externs import relu, select
 from exo.libs.memories import DRAM_STATIC, GEMM_ACCUM, GEMM_SCRATCH
-from exo.platforms.gemmini import acc_scale, clamp
+from exo.platforms.gemmini import (
+    ConfigStore,
+    _gemm_st_acc_i8,
+    acc_scale,
+    clamp,
+    config_st_acc_i8,
+    old_fission_after,
+    set_prec_mem,
+    st_acc_i8,
+)
 
-from exo import DRAM, instr
+from exo import DRAM, config, instr
 
 
 class _RdCycle(Extern):
@@ -44,15 +61,169 @@ def fence():
     pass
 
 
-_gemm_ld_acc_i32_bias = (
-    "gemmini_extended3_config_ld(0, 1.0f, 0, 0);\n"
-    + "gemmini_extended_mvin( ((uint64_t) &{src_data}), "
-    + "((uint32_t) &{dst_data}), {m}, {n} );"
+def make_config_ld(ld_id=0):
+    def new_config_ld():
+        if ld_id == 0:
+
+            @config
+            class ConfigLoad:
+                src_stride: stride
+                block_stride: stride
+
+            return ConfigLoad
+        if ld_id == 1:
+
+            @config
+            class ConfigLoad_id1:
+                src_stride: stride
+                block_stride: stride
+
+            return ConfigLoad_id1
+
+        @config
+        class ConfigLoad_id2:
+            src_stride: stride
+            block_stride: stride
+
+        return ConfigLoad_id2
+
+    config_load = new_config_ld()
+
+    if ld_id == 0:
+
+        @instr("gemmini_extended3_config_ld(0, 1.0f, 0, 0);")
+        def config_ld_repeat():
+            config_load.src_stride = 0
+            config_load.block_stride = 16
+
+        return config_load, config_ld_repeat
+
+    @instr(
+        "gemmini_extended4_config_ld({src_stride}, 1.0f, 0, "
+        "{block_stride}/16, " + str(ld_id) + ");"
+    )
+    def config_ld_i8_block(src_stride: stride, block_stride: stride):
+        config_load.src_stride = src_stride
+        config_load.block_stride = block_stride
+
+    return config_load, rename(
+        config_ld_i8_block, f"config_ld_i8_block_id{ld_id}"
+    )
+
+
+ConfigLoad, config_ld_repeat = make_config_ld()
+ConfigLoad_id1, config_ld_i8_block_id1 = make_config_ld(1)
+ConfigLoad_id2, config_ld_i8_block_id2 = make_config_ld(2)
+
+
+_gemm_do_ld_i8_block_strided_id1 = (
+    "gemmini_extended_mvin2(((uintptr_t) &{src_data}), "
+    "((uint32_t )(uintptr_t) &{dst_data}), 16*{m}, {n});"
+)
+_gemm_do_ld_i8_block_strided_id2 = (
+    "gemmini_extended_mvin3(((uintptr_t) &{src_data}), "
+    "((uint32_t )(uintptr_t) &{dst_data}), 16*{m}, {n});"
+)
+_gemm_config_ld_i8_block_strided_id1 = (
+    "gemmini_extended4_config_ld({src}.strides[0], 1.0f, 0, "
+    "{dst}.strides[0]/16, 1);\n"
+)
+_gemm_config_ld_i8_block_strided_id2 = (
+    "gemmini_extended4_config_ld({src}.strides[0], 1.0f, 0, "
+    "{dst}.strides[0]/16, 2);\n"
+)
+_gemm_ld_i8_block_strided_id1 = (
+    _gemm_config_ld_i8_block_strided_id1 + _gemm_do_ld_i8_block_strided_id1
+)
+_gemm_ld_i8_block_strided_id2 = (
+    _gemm_config_ld_i8_block_strided_id2 + _gemm_do_ld_i8_block_strided_id2
 )
 
 
-@instr(_gemm_ld_acc_i32_bias)
-def ld_acc_i32_bias(
+@instr(_gemm_ld_i8_block_strided_id1)
+def ld_i8_block_strided(
+    n: size,
+    m: size,
+    src: [i8][n, 16 * m] @ DRAM,
+    dst: [i8][m, n, 16] @ GEMM_SCRATCH,
+):
+    assert n <= 16
+    assert m <= 4
+    assert stride(src, 1) == 1
+    assert stride(dst, 1) == 16
+    assert stride(dst, 2) == 1
+
+    for i in seq(0, n):
+        for j in seq(0, m):
+            for k in seq(0, 16):
+                dst[j, i, k] = src[i, k + 16 * j]
+
+
+do_ld_i8_block_strided_id1 = make_instr(
+    rename(ld_i8_block_strided, "do_ld_i8_block_strided_id1"),
+    _gemm_do_ld_i8_block_strided_id1,
+)
+do_ld_i8_block_strided_id2 = make_instr(
+    rename(ld_i8_block_strided, "do_ld_i8_block_strided_id2"),
+    _gemm_do_ld_i8_block_strided_id2,
+)
+
+
+def make_ld_i8_block_strided(name, ld_id, p=ld_i8_block_strided, split=False):
+    if ld_id == 1:
+        config_load = ConfigLoad_id1
+        config_ld = config_ld_i8_block_id1
+        do_ld = do_ld_i8_block_strided_id1
+        gemm_c = _gemm_ld_i8_block_strided_id1
+    else:
+        assert ld_id == 2
+        config_load = ConfigLoad_id2
+        config_ld = config_ld_i8_block_id2
+        do_ld = do_ld_i8_block_strided_id2
+        gemm_c = _gemm_ld_i8_block_strided_id2
+
+    p = rename(p, name)
+    if split:
+        p = write_config(
+            p, p.body().before(), config_load, "block_stride", "stride(dst, 0)"
+        )
+        p = write_config(
+            p, p.body().before(), config_load, "src_stride", "stride(src, 0)"
+        )
+        p = replace(
+            p,
+            f"{config_load.name()}.src_stride = _ ; "
+            f"{config_load.name()}.block_stride = _",
+            config_ld,
+        )
+        p = replace(p, "for i in _:_", do_ld)
+        return p
+    return make_instr(p, gemm_c)
+
+
+ld_i8_block_strided_id1 = make_ld_i8_block_strided(
+    "ld_i8_block_strided_id1", 1
+)
+ld_i8_block_strided_id1_v2 = make_ld_i8_block_strided(
+    "ld_i8_block_strided_id1_v2", 1, split=True
+)
+ld_i8_block_strided_id2 = make_ld_i8_block_strided(
+    "ld_i8_block_strided_id2", 2
+)
+ld_i8_block_strided_id2_v2 = make_ld_i8_block_strided(
+    "ld_i8_block_strided_id2_v2", 2, split=True
+)
+
+
+_gemm_config_ld_repeat = "gemmini_extended3_config_ld(0, 1.0f, 0, 0);"
+_gemm_do_ld_acc_i32_repeat = (
+    "gemmini_extended_mvin(((uintptr_t) &{src_data}), "
+    "((uint32_t )(uintptr_t) &{dst_data}), {m}, {n});"
+)
+
+
+@instr(_gemm_config_ld_repeat + "\n" + _gemm_do_ld_acc_i32_repeat)
+def ld_acc_i32_repeat(
     n: size,
     m: size,
     src: [i32][m] @ DRAM,
@@ -60,27 +231,56 @@ def ld_acc_i32_bias(
 ):
     assert n <= 16
     assert m <= 16
+    assert stride(src, 0) == 1
     assert stride(dst, 0) == 16
     assert stride(dst, 1) == 1
-    assert stride(src, 0) == 1
 
     for i in seq(0, n):
         for j in seq(0, m):
             dst[i, j] = src[j]
 
 
-_gemm_st_acc_i8_no_act = (
-    "gemmini_extended_config_st({dst}.strides[0]*1, 0, {scale}[0]);\n"
-    + "gemmini_extended_mvout( ((uint64_t) &{dst_data}), "
-    + "(uint32_t) &{src_data}, {m}, {n} );"
+do_ld_acc_i32_repeat = make_instr(
+    rename(ld_acc_i32_repeat, "do_ld_acc_i32_repeat"), _gemm_do_ld_acc_i32_repeat
 )
 
 
-@instr(_gemm_st_acc_i8_no_act)
-def st_acc_i8_no_act(
+def make_ld_acc_i32_repeat_v2(p=ld_acc_i32_repeat):
+    p = rename(p, "ld_acc_i32_repeat_v2")
+    p = write_config(p, p.body().before(), ConfigLoad, "block_stride", "16")
+    p = write_config(p, p.body().before(), ConfigLoad, "src_stride", "0")
+    p = replace(
+        p,
+        "ConfigLoad.src_stride = _ ; ConfigLoad.block_stride = _",
+        config_ld_repeat,
+    )
+    p = replace(p, "for i in _:_", do_ld_acc_i32_repeat)
+    return p
+
+
+ld_acc_i32_repeat_v2 = make_ld_acc_i32_repeat_v2()
+
+
+def make_st_acc_i8(name, act, p=st_acc_i8):
+    p = rename(p.partial_eval(act=act), name)
+    return make_instr(
+        simplify(p), _gemm_st_acc_i8.replace("{act}", "RELU" if act else "0")
+    )
+
+
+st_acc_i8_no_act = make_st_acc_i8("st_acc_i8_no_act", False)
+st_acc_i8_act = make_st_acc_i8("st_acc_i8_act", True)
+
+_gemm_do_st_acc_i8 = (
+    "gemmini_extended_mvout( ((uint64_t) &{dst_data}), "
+    "(uint32_t) &{src_data}, {m}, {n} );"
+)
+
+
+@instr(_gemm_do_st_acc_i8)
+def do_st_acc_i8_act(
     n: size,
     m: size,
-    scale: f32 @ DRAM,
     src: [i32][n, 16] @ GEMM_ACCUM,
     dst: [i8][n, m] @ DRAM,
 ):
@@ -94,48 +294,49 @@ def st_acc_i8_no_act(
         for j in seq(0, m):
             src_tmp: i32
             src_tmp = src[i, j]
-            tmp_res1: f32
-            acc_scale(src_tmp, tmp_res1, scale)
-            tmp_res2: i8
-            clamp(tmp_res1, tmp_res2)
-            dst[i, j] = tmp_res2
+            tmp: f32
+            acc_scale(src_tmp, tmp, ConfigStore.scale)
+            tmp2: i8
+            clamp(tmp, tmp2)
+            tmp2 = relu(tmp2)
+            dst[i, j] = tmp2
 
 
-_gemm_st_acc_i8_relu = (
-    "gemmini_extended_config_st({dst}.strides[0]*1, RELU, "
-    + "({scale}[0] * {post_scale}[0]));\n"
-    + "gemmini_extended_mvout( ((uint64_t) &{dst_data}), "
-    + "(uint32_t) &{src_data}, {m}, {n} );"
-)
+def make_st_acc_i8_act_v2(p=st_acc_i8_act):
+    p = rename(p, "st_acc_i8_act_v2")
+    p = bind_config(p, "scale", ConfigStore, "scale")
+    for pair in (
+        "tmp : _ ; ConfigStore.scale = _",
+        "src_tmp = _ ; ConfigStore.scale = _",
+        "src_tmp : _ ; ConfigStore.scale = _",
+    ):
+        p = reorder_stmts(p, p.find(pair))
+    p = old_fission_after(p, "ConfigStore.scale = _", n_lifts=2)
+    p = write_config(
+        p,
+        p.find("ConfigStore.scale = _").after(),
+        ConfigStore,
+        "dst_stride",
+        "stride(dst, 0)",
+    )
+    p = write_config(
+        p,
+        p.find("ConfigStore.dst_stride = _").after(),
+        ConfigStore,
+        "act",
+        "True",
+    )
+    p = replace(p, "for i in _:_", do_st_acc_i8_act)
+    p = replace(
+        p,
+        "ConfigStore.scale = _ ; ConfigStore.dst_stride = _ ; "
+        "ConfigStore.act = _",
+        config_st_acc_i8,
+    )
+    return p
 
 
-@instr(_gemm_st_acc_i8_relu)
-def st_acc_i8_relu(
-    n: size,
-    m: size,
-    scale: f32 @ DRAM,
-    post_scale: f32 @ DRAM,
-    src: [i32][n, 16] @ GEMM_ACCUM,
-    dst: [i8][n, m] @ DRAM,
-):
-    assert n <= 16
-    assert m <= 16
-    assert stride(dst, 1) == 1
-    assert stride(src, 0) == 16
-    assert stride(src, 1) == 1
-
-    for i in seq(0, n):
-        for j in seq(0, m):
-            tmp_scale: f32
-            tmp_scale = scale * post_scale
-            src_tmp: i32
-            src_tmp = src[i, j]
-            tmp_res1: f32
-            acc_scale(src_tmp, tmp_res1, tmp_scale)
-            tmp_res2: i8
-            clamp(tmp_res1, tmp_res2)
-            tmp_res2 = relu(tmp_res2)
-            dst[i, j] = tmp_res2
+st_acc_i8_act_v2 = make_st_acc_i8_act_v2()
 
 
 _gemm_matmul_acc_trans_b = (
@@ -168,6 +369,49 @@ def matmul_acc_i8_trans_b(
                 a = A[i, k]
                 b = B[j, k]
                 C[i, j] += a * b
+
+
+def new_config_matmul_trans_b():
+    @config
+    class ConfigMatmulTransB:
+        done: bool
+
+    return ConfigMatmulTransB
+
+
+ConfigMatmulTransB = new_config_matmul_trans_b()
+
+_gemm_config_matmul_trans_b = "gemmini_extended_config_ex(WS, 0, 0, 1, 0, 1);"
+
+
+@instr(_gemm_config_matmul_trans_b)
+def config_matmul_trans_b():
+    ConfigMatmulTransB.done = True
+
+
+_gemm_do_matmul_acc_trans_b = (
+    "gemmini_extended_preload((uint32_t)(&{B_data}), "
+    + "(uint32_t)(&{C_data}) | 0x40000000, {M}, {K}, {M}, {N});\n"
+    + "gemmini_extended_compute_preloaded((uint32_t)(&{A_data}), "
+    + "~((uint32_t)0), {K}, {N}, 16, 16);"
+)
+
+do_matmul_acc_i8_trans_b = make_instr(
+    rename(matmul_acc_i8_trans_b, "do_matmul_acc_i8_trans_b"),
+    _gemm_do_matmul_acc_trans_b,
+)
+
+
+def make_matmul_acc_i8_trans_b_v2(p=matmul_acc_i8_trans_b):
+    p = rename(p, "matmul_acc_i8_trans_b_v2")
+    p = write_config(p, p.body().before(), ConfigMatmulTransB, "done", "True")
+    p = replace(p, "for i in _:_", do_matmul_acc_i8_trans_b)
+    p = replace(p, "ConfigMatmulTransB.done = True", config_matmul_trans_b)
+    p = make_instr(p, _gemm_do_matmul_acc_trans_b)
+    return p
+
+
+matmul_acc_i8_trans_b_v2 = make_matmul_acc_i8_trans_b_v2()
 
 
 def _gemm_ld_acc_i8_scaled(acc):
@@ -240,61 +484,6 @@ def ld_acc_i8_scaled_acc(
             dst[i, j] += b2
 
 
-_gemm_st_acc_i8_act = (
-    "gemmini_extended_config_st({dst}.strides[0]*1, RELU, {scale}[0]);\n"
-    + "gemmini_extended_mvout( ((uint64_t) &{dst_data}), "
-    + "(uint32_t) &{src_data}, {m}, {n} );"
-)
-
-
-@instr(_gemm_st_acc_i8_act)
-def st_acc_i8_act(
-    n: size,
-    m: size,
-    scale: f32 @ DRAM,
-    src: [i32][n, 16] @ GEMM_ACCUM,
-    dst: [i8][n, m] @ DRAM,
-):
-    assert n <= 16
-    assert m <= 16
-    assert stride(dst, 1) == 1
-    assert stride(src, 0) == 16
-    assert stride(src, 1) == 1
-
-    for i in seq(0, n):
-        for j in seq(0, m):
-            src_tmp: i32
-            tmp_res1: f32
-            tmp_res2: i8
-            src_tmp = src[i, j]
-            acc_scale(src_tmp, tmp_res1, scale)
-            clamp(tmp_res1, tmp_res2)
-            tmp_res2 = relu(tmp_res2)
-            dst[i, j] = tmp_res2
-
-
-_gemm_ld_acc_i32_col = (
-    "gemmini_extended3_config_ld({src}.strides[0]*4, 1.0f, 0, 0);\n"
-    + "gemmini_extended_mvin( ((uint64_t) &{src_data}), "
-    + "((uint32_t) &{dst_data}), 1, {n} );"
-)
-
-
-@instr(_gemm_ld_acc_i32_col)
-def ld_acc_i32_col(
-    n: size,
-    src: [i32][n] @ DRAM,
-    dst: [i32][n, 16] @ GEMM_ACCUM,
-):
-    assert n <= 16
-    assert stride(src, 0) == 1
-    assert stride(dst, 0) == 16
-    assert stride(dst, 1) == 1
-
-    for i in seq(0, n):
-        dst[i, 0] = src[i]
-
-
 _gemm_ld_i8_col = (
     "gemmini_extended3_config_ld({src}.strides[0]*1, 1.0f, 0, 2);\n"
     + "gemmini_extended_mvin3( &{src_data}, "
@@ -317,9 +506,22 @@ def ld_i8_col(
         dst[i, 0] = src[i]
 
 
-def _gemm_loop_softmax_flat(cols):
-    rows = "({n} + 15) / 16"
-    pad_rows = rows + " * 16 - {n}"
+_gemm_ld_acc_i32_col = (
+    "gemmini_extended3_config_ld({src}.strides[0]*4, 1.0f, 0, 0);\n"
+    + "gemmini_extended_mvin( ((uint64_t) &{src_data}), "
+    + "((uint32_t) &{dst_data}), 1, {n} );"
+)
+
+ld_acc_i32_col = rename(ld_i8_col, "ld_acc_i32_col")
+ld_acc_i32_col = set_prec_mem(ld_acc_i32_col, "src", "i32", DRAM)
+ld_acc_i32_col = set_prec_mem(ld_acc_i32_col, "dst", "i32", GEMM_ACCUM)
+ld_acc_i32_col = make_instr(ld_acc_i32_col, _gemm_ld_acc_i32_col)
+
+
+def _gemm_loop_softmax_flat(cols, row_scale=1):
+    n_rows = "{n}" if row_scale == 1 else f"{row_scale} * {{n}}"
+    rows = f"({n_rows} + 15) / 16"
+    pad_rows = f"{rows} * 16 - {n_rows}"
     J, pad_J = _blocks(cols)
     entries = ", ".join(f"[{(cols + 1) * i}] = 1" for i in range(cols))
     qln2 = "(int)(0.693147 / {in_scale}[0])"
@@ -849,50 +1051,8 @@ def make_loop_resadd(name, d, ch):
     return rename(loop_resadd, name)
 
 
-def _gemm_loop_softmax(d):
-    dd = d * d
-    J, pad_J = _blocks(dd)
-    rows = "(" + str(d) + " * {n} + 15) / 16"
-    pad_rows = rows + " * 16 - " + str(d) + " * {n}"
-    entries = ", ".join(f"[{(dd + 1) * i}] = 1" for i in range(dd))
-    qln2 = "(int)(0.693147 / {in_scale}[0])"
-    qb = "(int32_t)(1.353f / {in_scale}[0])"
-    qc = "(int32_t)(0.344f / (0.3585f * {in_scale}[0] * {in_scale}[0]))"
-    return (
-        "gemmini_extended_config_ex(WEIGHT_STATIONARY, (0), 0, 1, (0), (0));\n"
-        + f"gemmini_extended_config_st(({dd}), 0, "
-        + "1.0f / (127.0f * {out_scale}[0]));\n"
-        + f"gemmini_extended3_config_ld(({dd}), 1.0f, false, (0));\n"
-        + f"gemmini_extended3_config_ld(({dd}), 1.0f, false, (1));\n"
-        + f"gemmini_extended3_config_ld(({dd}), 1.0f, false, (2));\n"
-        + "gemmini_config_norm("
-        + qln2
-        + ", 0, 0, 1, 0, "
-        + qb
-        + ", "
-        + qc
-        + ");\n"
-        + "gemmini_config_norm((65536 / "
-        + qln2
-        + "), 1, 0, 1, 0, "
-        + qb
-        + ", "
-        + qc
-        + ");\n"
-        + "{{ "
-        + f"static const int8_t identity[{dd} * {dd}] = "
-        + "{{"
-        + entries
-        + "}};\n"
-        + f"gemmini_loop_ws({rows}, {J}, {J}, {pad_rows}, {pad_J}, {pad_J}, "
-        "&{A_data}, identity, 0, &{C_data}, "
-        f"{dd}, {dd}, {dd}, {dd}, "
-        "0, 0, 0, 0, 0, SOFTMAX, 1, 1, 0); }}"
-    )
-
-
 def make_loop_softmax(name, d, max_shift):
-    @instr(_gemm_loop_softmax(d))
+    @instr(_gemm_loop_softmax_flat(d * d, row_scale=d))
     def loop_softmax(
         n: size,
         A: [i8][n, d, d, d] @ DRAM,

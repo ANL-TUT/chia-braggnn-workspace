@@ -73,10 +73,6 @@ CHISEL_BUILD_MAKE_JOBS = 4
 GEMMINI_ROCC_TESTS_DIR = f"{FIRESIM_CHIPYARD_PATH}/generators/gemmini/software/gemmini-rocc-tests"
 GEMMINI_PARAMS_H_PATH = f"{GEMMINI_ROCC_TESTS_DIR}/include/gemmini_params.h"
 
-# Per-candidate work dirs on the exo_compiler container.
-EXO_WORK_ROOT = "/home/ray/braggnn-alphaevolve"
-
-# ---------------------------------------------------------------------------
 # FireSim (bitstream registration / build; see firesim.py)
 # ---------------------------------------------------------------------------
 FIRESIM_DEPLOY_DIR = f"{FIRESIM_CHIPYARD_PATH}/sims/firesim/deploy"

@@ -87,7 +87,6 @@ def sched_matmul_trans_b(cpu):
 
     do_matmul = make_loop_matmul_trans_b(f"do_{name}", CONV2_FILTERS, CONV1_DIM)
 
-    # 81 rows of theta cut into 72 + 9
     gemmini = rename(cpu, name)
     gemmini = divide_loop(gemmini, "i1", NLB_ROW_TILE, ["i1_o", "i1_i"], tail="cut")
     gemmini = simplify(gemmini)

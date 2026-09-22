@@ -5,7 +5,6 @@ import logging
 import os
 import re
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Any, Optional, Union
 
@@ -17,8 +16,7 @@ from result_mapper import map_braggnn_results
 from skydiscover.evaluation.chia_evaluator import ChiaEvaluator
 from skydiscover.evaluation.evaluation_result import EvaluationResult
 
-from constants import EXO_WORK_ROOT
-from exo_compiler import build_elf, prepare_work_dir, remove_work_dir
+from exo_compiler import build_candidate_elf
 from firesim import run_workload
 
 logger = logging.getLogger(__name__)
@@ -53,7 +51,7 @@ _ERROR_RE = re.compile(r"Avg error:\s*\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)")
 _FORBIDDEN_EXO = re.compile(r"\bunsafe_[A-Za-z_]+|\b_loopir_proc\b|\bLoopIR\b")
 
 
-def build_braggnn_binary(program_solution: str, work_dir: str) -> Any:
+def build_braggnn_binary(program_solution: str) -> Any:
     banned = _FORBIDDEN_EXO.search(program_solution)
     if banned:
         return ray.put(BraggnnBuildResult(
@@ -64,11 +62,7 @@ def build_braggnn_binary(program_solution: str, work_dir: str) -> Any:
                 "construction are not allowed)"
             ),
         ))
-    # Each candidate gets its own work dir on the exo container, holding the
-    # candidate as braggnn_schedule.py next to gemmini.py / braggnn_reference.py.
-    get(prepare_work_dir.chia_remote(work_dir, None, program_solution))
-    build = get(build_elf.chia_remote(work_dir))
-    remove_work_dir.chia_remote(work_dir)  # fire and forget: the ELF is already back
+    build = get(build_candidate_elf.chia_remote(program_solution))
     return ray.put(BraggnnBuildResult(
         success=build["elf"] is not None,
         binary=build["elf"] or b"",
@@ -88,9 +82,6 @@ class BraggnnEvaluator(ChiaEvaluator):
         self._firesim_ready = firesim_ready
         # --sw-only test runs: no FireSim node, so "run" = the ELF's size in bytes.
         self._fake_run = fake_run
-        # Candidates are evaluated concurrently; a per-evaluator id keeps their
-        # work dirs apart from earlier attempts' on the exo container.
-        self._work_root = f"{EXO_WORK_ROOT}/{uuid.uuid4().hex[:8]}"
         # itertools.count().next() is a single GIL-protected C call, so it's
         # safe to share across the evaluator threads AlphaEvolve's shim spins
         # up per candidate (see bridge.py's _SHIM_TEMPLATE) without a lock.
@@ -115,7 +106,7 @@ class BraggnnEvaluator(ChiaEvaluator):
     def _build(self, program_solution: str) -> Any:
         idx = next(self._candidate_counter)
         self._save_candidate_source(program_solution, idx)
-        return build_braggnn_binary(program_solution, f"{self._work_root}/cand_{idx:04d}")
+        return build_braggnn_binary(program_solution)
 
     def _save_candidate_source(self, program_solution: str, idx: int) -> None:
         """Persist every candidate AlphaEvolve generates (not just the best

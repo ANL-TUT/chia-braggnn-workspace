@@ -41,15 +41,17 @@ BUILD_TIMEOUT_SECONDS = 600
 
 @ChiaFunction(resources={"exo_build": 1})
 def prepare_work_dir(
-    work_dir: str, source_dir: str | None = None, source: str | None = None
+    work_dir: str,
+    source_dir: str | None = None,
+    schedule_name: str = "braggnn_schedule.py",
 ) -> None:
-    """Seed work_dir with braggnn_schedule.py from `source` (program text), else
-    from source_dir (default: the shipped one).
+    """Seed work_dir with braggnn_schedule.py from source_dir (default: the shipped one).
 
     Also copies the C harness (with Gemmini headers and allocators) into
     work_dir/harness, and next to braggnn_schedule.py puts gemmini.py (the
-    instrs), braggnn_reference.py (the *_on_cpu specs it schedules) and
-    braggnn_schedule_lowlevel.py (a read-only reference schedule). build_elf always
+    instrs), braggnn_reference.py (the *_on_cpu specs it schedules) and the
+    read-only reference schedules (braggnn_schedule_lowlevel.py and
+    braggnn_schedule_fusion.py). build_elf always
     uses the shipped C harness, but it runs exocc on
     work_dir/braggnn_schedule.py, and exocc puts that file's directory on
     sys.path, so the modules the agent sees are the ones the build uses.
@@ -62,16 +64,15 @@ def prepare_work_dir(
     shutil.copy(
         SHIPPED_EXO_DIR / "braggnn_schedule.py", work / "braggnn_schedule.orig.py"
     )
-    source_path = Path(source_dir) if source_dir else SHIPPED_EXO_DIR
-    shutil.copy(source_path / "braggnn_schedule.py", work / "braggnn_schedule.py")
-    if source is not None:
-        (work / "braggnn_schedule.py").write_text(source)
+    source = Path(source_dir) if source_dir else SHIPPED_EXO_DIR
+    shutil.copy(source / schedule_name, work / "braggnn_schedule.py")
     shutil.copy(SHIPPED_EXO_DIR / "gemmini.py", work / "gemmini.py")
     shutil.copy(SHIPPED_EXO_DIR / "braggnn_reference.py", work / "braggnn_reference.py")
-    shutil.copy(
-        SHIPPED_EXO_DIR / "braggnn_schedule_lowlevel.py",
-        work / "braggnn_schedule_lowlevel.py",
-    )
+    for reference in (
+        "braggnn_schedule_lowlevel.py",
+        "braggnn_schedule_fusion.py",
+    ):
+        shutil.copy(SHIPPED_EXO_DIR / reference, work / reference)
     for name in HARNESS_FILES:
         shutil.copy(SHIPPED_EXO_DIR / name, harness / name)
     for name in HARNESS_DIRS:
@@ -129,7 +130,74 @@ def build_elf(work_dir: str) -> dict:
     return {"source": source, "elf": elf, "stage": "build", "log": ""}
 
 
-@ChiaFunction(resources={"exo_build": 0.01})
-def remove_work_dir(work_dir: str) -> None:
-    """Delete a per-candidate work dir once its ELF has been read back."""
-    shutil.rmtree(work_dir, ignore_errors=True)
+@ChiaFunction(resources={"exo_build": 1})
+def build_candidate_elf(program_source: str) -> dict:
+    """Build one AlphaEvolve candidate in an isolated temporary directory.
+
+    The candidate crosses the Ray boundary as source text because the Evolver
+    and Exo compiler run in different containers.  It is materialized as
+    braggnn_schedule.py only inside the compiler container, compiled, and then
+    removed with the rest of the temporary directory.
+    """
+    import exo  # exo-lang, installed in the container
+
+    with tempfile.TemporaryDirectory(prefix="chia-braggnn-candidate-") as tmp:
+        build = Path(tmp)
+        source_path = build / "braggnn_schedule.py"
+        source_path.write_text(program_source)
+
+        for name in ("gemmini.py", "braggnn_reference.py", *HARNESS_FILES):
+            shutil.copy(SHIPPED_EXO_DIR / name, build / name)
+        for name in HARNESS_DIRS:
+            shutil.copytree(SHIPPED_EXO_DIR / name, build / name)
+        for name in GEMM_MALLOC_FILES:
+            shutil.copy(Path(exo.__file__).parent / "libs" / name, build / name)
+
+        steps = [
+            (
+                "exo",
+                [
+                    "exocc",
+                    str(source_path),
+                    "-o",
+                    ".",
+                    "--stem",
+                    "braggnn_schedule",
+                ],
+            ),
+            ("build", MAKE_COMMAND),
+        ]
+        for stage, cmd in steps:
+            try:
+                done = subprocess.run(
+                    cmd,
+                    cwd=build,
+                    capture_output=True,
+                    text=True,
+                    timeout=BUILD_TIMEOUT_SECONDS,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                log = f"{cmd[0]} timed out after {BUILD_TIMEOUT_SECONDS}s"
+                return {
+                    "source": program_source,
+                    "elf": None,
+                    "stage": stage,
+                    "log": log,
+                }
+            if done.returncode != 0:
+                return {
+                    "source": program_source,
+                    "elf": None,
+                    "stage": stage,
+                    "log": done.stdout + done.stderr,
+                }
+
+        elf = (build / "braggnn.riscv").read_bytes()
+
+    return {
+        "source": program_source,
+        "elf": elf,
+        "stage": "build",
+        "log": "",
+    }
