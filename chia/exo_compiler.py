@@ -128,3 +128,76 @@ def build_elf(work_dir: str) -> dict:
                 return {"source": source, "elf": None, "stage": stage, "log": log}
         elf = (build / "braggnn.riscv").read_bytes()
     return {"source": source, "elf": elf, "stage": "build", "log": ""}
+
+
+@ChiaFunction(resources={"exo_build": 1})
+def build_candidate_elf(program_source: str) -> dict:
+    """Build one AlphaEvolve candidate in an isolated temporary directory.
+
+    The candidate crosses the Ray boundary as source text because the Evolver
+    and Exo compiler run in different containers.  It is materialized as
+    braggnn_schedule.py only inside the compiler container, compiled, and then
+    removed with the rest of the temporary directory.
+    """
+    import exo  # exo-lang, installed in the container
+
+    with tempfile.TemporaryDirectory(prefix="chia-braggnn-candidate-") as tmp:
+        build = Path(tmp)
+        source_path = build / "braggnn_schedule.py"
+        source_path.write_text(program_source)
+
+        for name in ("gemmini.py", "braggnn_reference.py", *HARNESS_FILES):
+            shutil.copy(SHIPPED_EXO_DIR / name, build / name)
+        for name in HARNESS_DIRS:
+            shutil.copytree(SHIPPED_EXO_DIR / name, build / name)
+        for name in GEMM_MALLOC_FILES:
+            shutil.copy(Path(exo.__file__).parent / "libs" / name, build / name)
+
+        steps = [
+            (
+                "exo",
+                [
+                    "exocc",
+                    str(source_path),
+                    "-o",
+                    ".",
+                    "--stem",
+                    "braggnn_schedule",
+                ],
+            ),
+            ("build", MAKE_COMMAND),
+        ]
+        for stage, cmd in steps:
+            try:
+                done = subprocess.run(
+                    cmd,
+                    cwd=build,
+                    capture_output=True,
+                    text=True,
+                    timeout=BUILD_TIMEOUT_SECONDS,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                log = f"{cmd[0]} timed out after {BUILD_TIMEOUT_SECONDS}s"
+                return {
+                    "source": program_source,
+                    "elf": None,
+                    "stage": stage,
+                    "log": log,
+                }
+            if done.returncode != 0:
+                return {
+                    "source": program_source,
+                    "elf": None,
+                    "stage": stage,
+                    "log": done.stdout + done.stderr,
+                }
+
+        elf = (build / "braggnn.riscv").read_bytes()
+
+    return {
+        "source": program_source,
+        "elf": elf,
+        "stage": "build",
+        "log": "",
+    }

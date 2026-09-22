@@ -11,7 +11,7 @@ auth:
 
 available_node_types:
     perflab_firesim:
-        resources: {"firesim": 1}
+        resources: {"FPGA": 1, "manager": 1}
         num_workers: 1
         compatible_ips: ["133.15.45.113"]
         worker_env_commands:
@@ -27,15 +27,17 @@ available_node_types:
             pull_before_run: False
 
     opencode:
-        resources: {"opencode_creds": 1}
+        resources: {"opencode_creds": 1, "evolver": 1} # This node has both opencode and alphaevolve APIs
         num_workers: 1
         compatible_ips: ["${CHIA_HEAD_IP}"]
         docker:
-            image: "ghcr.io/ucb-bar/chia-opencode:v1.0.1"
+            image: "chia-evolver:latest"
             container_name: "chia-opencode"
+            pull_before_run: False
             run_options:
                 - "-v ${HOME}/.config/gcloud:/mnt/host-gcloud:ro"
                 - "-e GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}"
+                - "-e GE_APP_ID=${GE_APP_ID}"
                 - "-e VERTEX_LOCATION=global"
             run_setup_commands:
                 - "mkdir -p ~/.config/gcloud"
