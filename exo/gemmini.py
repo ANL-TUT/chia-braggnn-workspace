@@ -302,10 +302,8 @@ def do_st_acc_i8_act(
             dst[i, j] = tmp2
 
 
-def make_st_acc_i8_act_v2(
-    p=st_acc_i8_act, do=do_st_acc_i8_act, name="st_acc_i8_act_v2"
-):
-    p = rename(p, name)
+def make_st_acc_i8_act_v2(p=st_acc_i8_act):
+    p = rename(p, "st_acc_i8_act_v2")
     p = bind_config(p, "scale", ConfigStore, "scale")
     for pair in (
         "tmp : _ ; ConfigStore.scale = _",
@@ -328,7 +326,7 @@ def make_st_acc_i8_act_v2(
         "act",
         "True",
     )
-    p = replace(p, "for i in _:_", do)
+    p = replace(p, "for i in _:_", do_st_acc_i8_act)
     p = replace(
         p,
         "ConfigStore.scale = _ ; ConfigStore.dst_stride = _ ; "
@@ -339,75 +337,6 @@ def make_st_acc_i8_act_v2(
 
 
 st_acc_i8_act_v2 = make_st_acc_i8_act_v2()
-
-
-# Accumulator -> scratchpad move-out (k_MVOUT_SPAD): the same scale / clamp /
-# ReLU as a DRAM mvout, but the i8 rows land in the scratchpad, so the next
-# layer can read them without a DRAM round trip. The destination rows are
-# contiguous (dst_stride 1) because the reservation station tracks an
-# mvout_spad's destination as `rows` consecutive rows; a wider stride would
-# hide the later rows from its dependency checks. Every destination row is
-# written in full (the hardware ignores the column mask), hence 16 columns.
-_gemm_do_st_acc_i8_spad = (
-    "gemmini_extended_mvout_spad(((uint32_t)(uintptr_t) &{dst_data}), 1, "
-    "(uint32_t) &{src_data}, 16, {n});"
-)
-
-
-@instr(
-    "gemmini_extended_config_st(0, RELU, {scale}[0]);\n" + _gemm_do_st_acc_i8_spad
-)
-def st_acc_i8_act_spad(
-    n: size,
-    scale: f32,
-    src: [i32][n, 16] @ GEMM_ACCUM,
-    dst: [i8][n, 16] @ GEMM_SCRATCH,
-):
-    assert n <= 16
-    assert stride(src, 0) == 16
-    assert stride(src, 1) == 1
-    assert stride(dst, 0) == 16
-    assert stride(dst, 1) == 1
-
-    for i in seq(0, n):
-        for j in seq(0, 16):
-            src_tmp: i32
-            src_tmp = src[i, j]
-            tmp: f32
-            acc_scale(src_tmp, tmp, scale)
-            tmp2: i8
-            clamp(tmp, tmp2)
-            tmp2 = relu(tmp2)
-            dst[i, j] = tmp2
-
-
-@instr(_gemm_do_st_acc_i8_spad)
-def do_st_acc_i8_act_spad(
-    n: size,
-    src: [i32][n, 16] @ GEMM_ACCUM,
-    dst: [i8][n, 16] @ GEMM_SCRATCH,
-):
-    assert n <= 16
-    assert stride(src, 0) == 16
-    assert stride(src, 1) == 1
-    assert stride(dst, 0) == 16
-    assert stride(dst, 1) == 1
-
-    for i in seq(0, n):
-        for j in seq(0, 16):
-            src_tmp: i32
-            src_tmp = src[i, j]
-            tmp: f32
-            acc_scale(src_tmp, tmp, ConfigStore.scale)
-            tmp2: i8
-            clamp(tmp, tmp2)
-            tmp2 = relu(tmp2)
-            dst[i, j] = tmp2
-
-
-st_acc_i8_act_spad_v2 = make_st_acc_i8_act_v2(
-    st_acc_i8_act_spad, do_st_acc_i8_act_spad, "st_acc_i8_act_spad_v2"
-)
 
 
 _gemm_matmul_acc_trans_b = (

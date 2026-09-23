@@ -88,10 +88,9 @@ that Exo refuses any scalar access to a GEMM_SCRATCH buffer, so every read and \
 write of it has to come from an instr.
 - braggnn_schedule_fusion.py is a second read-only reference. It keeps the loop \
 macros for conv1, the NLB and the fc layers, but schedules conv2 and conv3 down \
-to low-level instrs and fuses them. Measured on FireSim it is 48,464 cycles \
-against 45,170 for braggnn_schedule.py, so it is still slower overall -- do not \
-copy it wholesale. What is worth taking from it is how it makes a low-level \
-conv cheap and how it fuses two layers:
+to low-level instrs. Measured on FireSim it is 48,113 cycles against 45,170 for \
+braggnn_schedule.py, so it is still slower overall -- do not copy it wholesale. \
+What is worth taking from it is how it makes a low-level conv cheap:
   - a matmul command costs about 17 cycles whatever N is, because the \
 weight-stationary preload always pushes 16 rows into the array. With one \
 output row per column position N is only 7 and the array runs at 7/17. \
@@ -110,28 +109,6 @@ store config uses `old_fission_after` instead; neither needs an unsafe option.
 instead of the gemm_malloc allocator, and the weights are transposed into an \
 OHWI copy once before the patch loop so that a weight mvin can move 4 blocks \
 at a time.
-  - conv2's result goes from the accumulator straight into conv3's scratchpad \
-input, with no DRAM round trip: gemmini.py's `st_acc_i8_act_spad` (and its \
-`_v2` with the config split out) is one `gemmini_extended_mvout_spad`, which \
-applies the same scale / clamp / ReLU as a DRAM mvout but writes the i8 rows \
-into the scratchpad. `fuse_conv2_conv3` shows how to derive it without unsafe \
-options: leave the producer's store and the consumer's input staging as plain \
-loops (do not replace them yet), inline both layers into one proc, cut the \
-store loop into pieces and duplicate each piece (`add_loop` then \
-`unroll_loop` on the idempotent store) as many times as the staging reads it, \
-`fuse` every copy with the staging piece that reads it, `inline_assign` the \
-store so the staging reads the stored value directly, `delete_buffer` the \
-intermediate once nothing uses it, then `join_loops` the pieces and `replace` \
-them with the instr. The destination rows of one mvout_spad must be \
-contiguous (dst stride 1: the hardware's dependency tracking only covers \
-`rows` consecutive rows) and whole 16-column rows are written. Exo sees two \
-fixed-address buffers as unrelated, so the consumer's scratchpad input and \
-accumulator must not overlap the producer's (conv3's input_tmp is at row 1024 \
-and its res at accumulator row 128); no fence is needed between the layers. \
-Here the fusion itself costs about 350 cycles (48,106 without it), because conv3 stages three \
-kcol-shifted copies of its input, so it takes 42 five-row mvout_spads instead \
-of 14 mvouts and 21 mvins; it pays off when the consumer reads one contiguous \
-copy of the producer's output.
 - Two things that measurement showed and you should not rediscover the hard \
 way: an i32 accumulator mvin must stay at 16 columns or fewer (a multi-block \
 one hangs the accelerator, because the DMA byte counter is 6 bits wide), and \
@@ -267,7 +244,7 @@ Working directory in the Exo container: {work_dir}
 - braggnn_schedule.py: the current best version ({best.summary()}). Edit this file; it is the one that gets compiled and measured.
 - braggnn_schedule.orig.py: the original version. Do not edit it.
 - braggnn_schedule_lowlevel.py: the same algorithm scheduled down to Gemmini's low-level instructions. Reference only; do not edit it.
-- braggnn_schedule_fusion.py: conv2 and conv3 scheduled down to low-level instrs with N=16 matmul tiling and fused through the scratchpad (conv2's accumulator -> conv3's input with mvout_spad), the rest left on the loop macros (48,464 cycles). Reference only; do not edit it.
+- braggnn_schedule_fusion.py: conv2 and conv3 scheduled down to low-level instrs with N=16 matmul tiling, the rest left on the loop macros (48,113 cycles). Reference only; do not edit it.
 
 History of attempts:
 {chr(10).join(history) or "(none yet)"}
