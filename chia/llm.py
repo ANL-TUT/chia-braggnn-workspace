@@ -1,5 +1,3 @@
-import os
-
 from chia.base.ChiaFunction import get
 from chia.base.llm_call import QueryResult
 from chia.base.tools.BashTool import BashTool
@@ -15,10 +13,9 @@ def gemini_vertex_provider(model: str = OPENCODE_MODEL) -> AdditionalModelProvid
         id=provider_id or "google-vertex", npm="@ai-sdk/google-vertex",
         name="Google Vertex AI",
         models={model_id: {"limit": {"context": 1000000, "output": 65536}}},
-        options={
-            "project": os.environ.get("GOOGLE_CLOUD_PROJECT"),
-            "location": "global",
-        },
+        # Expanded by opencode from the container env (set in cluster.yaml);
+        # the job driver has no GOOGLE_CLOUD_PROJECT (.env is not shipped).
+        options={"project": "{env:GOOGLE_CLOUD_PROJECT}", "location": "global"},
     )
 
 

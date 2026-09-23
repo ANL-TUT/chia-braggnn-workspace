@@ -126,11 +126,14 @@ def run_alphaevolve_search(
     )
 
     logger.info("Creating EvolverNode actor '%s'", actor_name)
+    # 0.9, not 1.0: the actor holds this for its lifetime, and _LiveProgress
+    # reads the evaluator's files with {"evolver": 0.01} tasks while it runs.
+    # Two actors still cannot share the node.
     evolver = EvolverNode.options(
         name=actor_name,
         namespace=EVOLVER_NAMESPACE,
         lifetime="detached",
-        resources={"evolver": 1.0},
+        resources={"evolver": 0.9},
     ).remote()
 
     with open(config_path) as f:
