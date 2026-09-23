@@ -261,6 +261,20 @@ If the previous attempt failed, fix the cause or try a different idea.
 """
 
 
+def save_best(out_dir: Path, iteration: int, source: str, evaluation: Evaluation) -> None:
+    """The best so far, rewritten on every improvement so a run stopped
+    midway still names its best schedule and what it measured."""
+    (out_dir / "best_braggnn_schedule.py").write_text(source)
+    fields = {k: v for k, v in asdict(evaluation).items() if k != "log"}
+    (out_dir / "best.json").write_text(json.dumps({"iteration": iteration, **fields}, indent=2))
+
+
+def log_history(out_dir: Path, line: str) -> None:
+    print(line, flush=True)
+    with open(out_dir / "history.txt", "a") as f:
+        f.write(line + "\n")
+
+
 def save(run_dir: Path, source: str | None, evaluation: Evaluation) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     if source:
@@ -316,10 +330,10 @@ def main() -> None:
     get(prepare_work_dir.chia_remote(best_dir, None, args.schedule))
     best_source, best = evaluate(best_dir)
     save(args.out_dir / "iter_00", best_source, best)
-    print(f"iter 0 (baseline): {best.summary()}", flush=True)
+    log_history(args.out_dir, f"iter 0 (baseline): {best.summary()}")
     if not best.passed or best.avg_cycles is None:
         raise SystemExit(best.log[-LOG_TAIL:])
-    (args.out_dir / "best_braggnn_schedule.py").write_text(best_source)
+    save_best(args.out_dir, 0, best_source, best)
 
     history: list[str] = []
     last = best
@@ -358,10 +372,10 @@ def main() -> None:
             and (last.avg_cycles < best.avg_cycles)
         )
         history.append(f"iter {i}: {last.summary()}{' (new best)' if improved else ''}")
-        print(history[-1], flush=True)
+        log_history(args.out_dir, history[-1])
         if improved:
             best_source, best, best_dir = source, last, work_dir
-            (args.out_dir / "best_braggnn_schedule.py").write_text(best_source)
+            save_best(args.out_dir, i, best_source, best)
 
     print(f"best: {best.summary()} -> {args.out_dir / 'best_braggnn_schedule.py'}")
 

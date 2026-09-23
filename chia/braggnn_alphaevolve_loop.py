@@ -15,8 +15,10 @@ back to the HW LLM (implement -> optimize, or debug after a failure).
 """
 
 import argparse
+import json
 import logging
 import os
+import signal
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -69,6 +71,35 @@ def _best_cycles(run) -> Optional[float]:
 def _cycles_score(run) -> Optional[float]:
     cycles = _best_cycles(run)
     return None if cycles is None else -cycles
+
+
+def _log_attempt(output_dir: str, attempt: int, feedback: str) -> None:
+    """Append an attempt's outcome (the feedback the HW LLM gets) to
+    attempts.txt as soon as it is known, so a stopped run keeps its history."""
+    with open(Path(output_dir) / "attempts.txt", "a") as f:
+        f.write(f"===== attempt {attempt + 1} =====\n{feedback}\n\n")
+
+
+def _save_best(output_dir: str, attempt: int, run, diffs: dict, ppa) -> None:
+    """The best attempt so far -- its schedule, Chisel diff and numbers --
+    rewritten on every improvement, without the Dumper's timestamp prefix."""
+    out = Path(output_dir)
+    (out / "best_braggnn_schedule.py").write_text(run.best_program)
+    (out / "best_chisel.diff").write_text("\n\n".join(
+        f"# ===== diff: {repo or '(chipyard root)'} =====\n{text}"
+        for repo, text in diffs.items() if text
+    ))
+    metrics = run.best_metrics or {}
+    (out / "best.json").write_text(json.dumps({
+        "attempt": attempt + 1,
+        "cycles": metrics.get("cycles"),
+        "subpixel_error": metrics.get("subpixel_error"),
+        "ppa_success": ppa.success,
+        "total_area_um2": ppa.total_area_um2,
+        "worst_slack_ns": ppa.worst_slack_ns,
+        "total_power_w": ppa.total_power_w,
+        "ppa_obj_dir": ppa.obj_dir,
+    }, indent=2))
 
 
 def _default_out_dir() -> str:
@@ -159,6 +190,8 @@ def _run_hw_flow(
     best_score = None
     exo_seed = SEED_PROGRAM
     for attempt in range(iterations):
+        if feedback is not None:
+            _log_attempt(output_dir, attempt - 1, feedback)
         if feedback is None:
             impl = implement(llm, chipyard_bash)
             dump_llm(dump, "implement", impl)
@@ -250,6 +283,25 @@ def _run_hw_flow(
         ppa_job.start_syn()
 
         try:
+            # Wait for the bitstream before searching: no candidate can be
+            # measured without it, the evolver's idle_timeout_s (2 h) is
+            # shorter than a build, and the next attempt's Chisel edit must
+            # not start while the build is still elaborating.
+            bitstream_ok, bitstream_out, bitstream_err = get(bitstream_ref)
+            dump.text(f"bitstream_attempt{attempt}.log",
+                      f"STDOUT:\n{bitstream_out}\n\nSTDERR:\n{bitstream_err}")
+            if not bitstream_ok:
+                logger.error("Bitstream build failure (attempt %d)", attempt + 1)
+                ppa_job.cancel()
+                feedback = (
+                    f"FireSim bitstream build failed (attempt {attempt + 1}), so "
+                    "nothing was measured:\n\n"
+                    f"STDOUT:\n{_tail(bitstream_out)}\n\nSTDERR:\n{_tail(bitstream_err)}"
+                )
+                feedback_kind = "failure"
+                if attempt + 1 < iterations:
+                    chipyard_bash = _new_chipyard_bash()
+                continue
             run = run_alphaevolve_search(
                 dump, attempt, exo_seed, bitstream_ref,
                 config_path=config_path, eval_dir=_eval_dir(output_dir),
@@ -268,7 +320,8 @@ def _run_hw_flow(
             exo_seed = run.best_program
 
             score = _cycles_score(run)
-            if score is not None and (best_score is None or score > best_score):
+            improved = score is not None and (best_score is None or score > best_score)
+            if improved:
                 best_run, best_score = run, score
                 logger.info(
                     "New best result (attempt %d): cycles=%s", attempt + 1, -score,
@@ -290,6 +343,8 @@ def _run_hw_flow(
                 "Hammer PPA (attempt %d): %s", attempt + 1,
                 "OK" if ppa.success else f"FAILED at {ppa.stage}",
             )
+            if improved:
+                _save_best(output_dir, attempt, run, diffs, ppa)
             if ppa.success:
                 ppa_note = (
                     f"\n\nHammer PPA (Genus synthesis, {PPA_FLOW_LABEL}) for this "
@@ -323,6 +378,8 @@ def _run_hw_flow(
         if attempt + 1 < iterations:
             chipyard_bash = _new_chipyard_bash()
 
+    if feedback is not None:
+        _log_attempt(output_dir, iterations - 1, feedback)
     logger.info("Loop finished (%d attempt(s))", iterations)
     result = best_run or run
     if best_run is not None and best_run.best_program:
@@ -378,6 +435,10 @@ def run_flow(
     return run
 
 
+def _exit_on_sigterm(signum, frame) -> None:
+    raise SystemExit(f"terminated by signal {signum}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -406,6 +467,9 @@ def main() -> None:
              "hwdb entry",
     )
     args = parser.parse_args()
+    # `ray job stop` sends SIGTERM; turn it into SystemExit so the finally
+    # blocks run (killing the detached evolver actor) before Ray's SIGKILL.
+    signal.signal(signal.SIGTERM, _exit_on_sigterm)
     if args.hw:
         _run_hw_flow(
             output_dir=args.out_dir,

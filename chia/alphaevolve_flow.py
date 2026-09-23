@@ -1,6 +1,8 @@
 import json
 import logging
 import os
+import time
+from pathlib import Path
 from typing import Optional
 
 import ray
@@ -47,14 +49,15 @@ def _read_measurements(output_dir: str) -> str:
 
 
 @ChiaFunction(resources={"evolver": 0.01})
-def _read_candidates(output_dir: str) -> dict:
+def _read_candidates(output_dir: str, skip: int = 0) -> dict:
     """Every candidate BraggnnEvaluator._save_candidate_source wrote on the
-    evolver node during this attempt -- name -> source, in generation order."""
+    evolver node during this attempt -- name -> source, in generation order --
+    except the first *skip*, which the caller already has."""
     candidates_dir = os.path.join(output_dir, "candidates")
     if not os.path.isdir(candidates_dir):
         return {}
     result = {}
-    for name in sorted(os.listdir(candidates_dir)):
+    for name in sorted(os.listdir(candidates_dir))[skip:]:
         path = os.path.join(candidates_dir, name)
         if os.path.isfile(path):
             with open(path, errors="replace") as f:
@@ -63,6 +66,9 @@ def _read_candidates(output_dir: str) -> dict:
 
 
 DEFAULT_CONFIG = str(PACKAGE_DIR.parent / "config_alphaevolve.yaml")  # workspace root
+# How often the driver copies the evolver's candidates / measurements back
+# while the search runs, so a search stopped midway keeps its results.
+PROGRESS_POLL_SECONDS = 60
 EVOLVER_ACTOR_NAME = "braggnn-evolver"
 EVOLVER_NAMESPACE = "chia-gemmini-braggnn"
 SEED_PROGRAM = _EXO_SEED
@@ -86,6 +92,10 @@ def run_alphaevolve_search(
     # the driver's own artifacts go through *dump* instead.
     if eval_dir is None:
         eval_dir = DEFAULT_OUTPUT_BASE
+    # One subdirectory per attempt: each attempt's evaluator numbers its
+    # candidates from 1 again and appends to its own measurements file, so a
+    # shared directory would mix attempts (and overwrite candidate files).
+    eval_dir = os.path.join(eval_dir, f"attempt{attempt}")
 
     actor_name = f"{EVOLVER_ACTOR_NAME}-attempt{attempt}"
 
@@ -187,14 +197,30 @@ def run_alphaevolve_search(
     )
 
     logger.info("Launching AlphaEvolve search for attempt %d", attempt)
-    result_ref = evolver.run_search.remote(
-        evolver_input,
-        build_fn=evaluator._build,
-        run_fn=evaluator._run,
-        result_mapper_fn=evaluator.result_mapper_fn,
-        evaluator=evaluator,
-    )
-    result = ray.get(result_ref)
+    progress = _LiveProgress(dump.out_dir, attempt, eval_dir)
+    logger.info("Live results: %s", progress.dir)
+    # The evolver is a detached actor: it outlives this driver, so kill it on
+    # every exit path (incl. `ray job stop`, see main's SIGTERM handler) rather
+    # than leave it running candidates on the FPGA.
+    try:
+        result_ref = evolver.run_search.remote(
+            evolver_input,
+            build_fn=evaluator._build,
+            run_fn=evaluator._run,
+            result_mapper_fn=evaluator.result_mapper_fn,
+            evaluator=evaluator,
+        )
+        # Short waits so a SIGTERM is handled within the few seconds `ray job
+        # stop` allows before SIGKILL.
+        last_sync = time.monotonic()
+        while not ray.wait([result_ref], timeout=5)[0]:
+            if time.monotonic() - last_sync >= PROGRESS_POLL_SECONDS:
+                progress.sync()
+                last_sync = time.monotonic()
+        result = ray.get(result_ref)
+        progress.sync()
+    finally:
+        ray.kill(evolver)
 
     logger.info(
         "AlphaEvolve search finished (attempt %d): terminal_status=%s, iterations=%d",
@@ -204,7 +230,6 @@ def run_alphaevolve_search(
         dump.text(f"best_exo_attempt{attempt}.py", result.best_program)
 
     evaluator.close()
-    ray.kill(evolver)
 
     eval_log = get(_read_eval_log.options(resources={"evolver": 0.01}).chia_remote(eval_dir))
     if eval_log:
@@ -228,6 +253,69 @@ def run_alphaevolve_search(
         )
 
     return result
+
+
+class _LiveProgress:
+    """Mirrors the search onto the driver while it runs, into
+    <out_dir>/attempt<N>_live/: candidates/, measurements.jsonl, progress.txt
+    (one line per measured candidate) and, whenever a candidate beats the
+    previous best, best_braggnn_schedule.py + best.json. The files exist only
+    in the evolver container until copied here, so this is what is left if the
+    job is stopped before the search ends."""
+
+    def __init__(self, out_dir: Path, attempt: int, eval_dir: str):
+        self.dir = Path(out_dir) / f"attempt{attempt}_live"
+        (self.dir / "candidates").mkdir(parents=True, exist_ok=True)
+        self.eval_dir = eval_dir
+        self.sources: dict[str, tuple[str, str]] = {}  # sha256 -> (name, source)
+        self.n_candidates = 0
+        self.n_measured = 0
+        self.best: Optional[dict] = None
+
+    def sync(self) -> None:
+        try:
+            new = get(_read_candidates.options(resources={"evolver": 0.01})
+                      .chia_remote(self.eval_dir, self.n_candidates))
+            measurements = get(_read_measurements.options(resources={"evolver": 0.01})
+                               .chia_remote(self.eval_dir))
+        except Exception as e:  # noqa: BLE001 -- progress is best-effort
+            logger.warning("Progress sync failed: %s", e)
+            return
+        for name, source in new.items():
+            (self.dir / "candidates" / name).write_text(source, errors="replace")
+            self.sources[source_sha256(source)] = (name, source)
+        self.n_candidates += len(new)
+
+        lines = measurements.splitlines()
+        (self.dir / MEASUREMENTS_FILE).write_text(measurements)
+        with open(self.dir / "progress.txt", "a") as progress:
+            for line in lines[self.n_measured:]:
+                record = json.loads(line)
+                name, source = self.sources.get(record["sha256"], ("?", None))
+                improved = (
+                    record.get("cycles") is not None
+                    and not record.get("failure_stage")
+                    and record.get("combined_score", 0.0) > 0.0
+                    and (self.best is None
+                         or record["combined_score"] > self.best["combined_score"])
+                )
+                if record.get("failure_stage"):
+                    verdict = f"FAILED at {record['failure_stage']}"
+                else:
+                    verdict = "PASSED"
+                entry = (
+                    f"{name}: {verdict} cycles={record.get('cycles')} "
+                    f"subpixel_error={record.get('subpixel_error')} "
+                    f"score={record.get('combined_score', 0.0):.4f}"
+                    + (" (new best)" if improved else "")
+                )
+                progress.write(entry + "\n")
+                logger.info("Candidate %s", entry)
+                if improved and source is not None:
+                    self.best = {**record, "candidate": name}
+                    (self.dir / "best_braggnn_schedule.py").write_text(source)
+                    (self.dir / "best.json").write_text(json.dumps(self.best, indent=2))
+        self.n_measured = len(lines)
 
 
 def _attach_measurement(result, measurements: str) -> None:
