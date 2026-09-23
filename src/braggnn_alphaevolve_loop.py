@@ -146,6 +146,7 @@ def _run_hw_flow(
     config_path: str = DEFAULT_CONFIG,
     mock_bitstream: bool = False,
     sw_only: bool = False,
+    mvout_spad: bool = False,
 ):
     if not ray.is_initialized():
         ray.init(address="auto")
@@ -337,6 +338,7 @@ def _run_hw_flow(
                 config_path=config_path, eval_dir=_eval_dir(output_dir),
                 hw_change_summary=_tail(impl.result if impl else ""),
                 hw_context=params_h, gemmini_params_h=params_h,
+                mvout_spad=mvout_spad,
             )
         except BaseException:
             ppa_job.cancel()
@@ -421,6 +423,7 @@ def run_flow(
     output_dir: Optional[str] = None,
     config_path: str = DEFAULT_CONFIG,
     sw_only: bool = False,
+    mvout_spad: bool = False,
 ):
     """Run one software search against the currently deployed hardware."""
     if not ray.is_initialized():
@@ -452,6 +455,7 @@ def run_flow(
         firesim_ready,
         config_path=config_path,
         eval_dir=_eval_dir(output_dir),
+        mvout_spad=mvout_spad,
     )
     logger.info(
         "Software search finished: status=%s, iterations=%s, best=%s",
@@ -489,30 +493,69 @@ def main() -> None:
     )
     parser.add_argument(
         "--iterations", type=int, default=MAX_ATTEMPTS,
-        help="--hw only: number of hardware attempts",
+        help="--hw / --rtl: number of hardware attempts / iterations",
     )
     parser.add_argument(
         "--mock-bitstream", action="store_true",
-        help="--hw only: skip the bitstream build and reuse the last built "
+        help="--hw / --rtl: skip the bitstream build and reuse the last built "
              "hwdb entry",
+    )
+    parser.add_argument(
+        "--rtl", action="store_true",
+        help="Run the RTL loop (src/rtl_flow.py): OpenCode RTL edits and then "
+             "parameter edits, each checked on Verilator (ISA unchanged, "
+             "bit-exact output), then a FireSim bitstream and AlphaEvolve; "
+             "--iterations sets the hardware iterations",
+    )
+    parser.add_argument(
+        "--rtl-steps", type=int, default=3,
+        help="--rtl only: RTL edits tried per hardware iteration",
+    )
+    parser.add_argument(
+        "--param-steps", type=int, default=2,
+        help="--rtl only: parameter edits tried per hardware iteration",
+    )
+    parser.add_argument(
+        "--verilator-patches", type=int, default=3,
+        help="--rtl only: patches each Verilator check runs",
+    )
+    parser.add_argument(
+        "--mvout-spad", action="store_true",
+        help="The bitstream supports mvout_spad (gemmini4xraymodels a7c2b9c or "
+             "later): let the search use gemmini.py's st_acc_i8_act_spad* "
+             "instrs. Without it, candidates that use them are rejected.",
     )
     args = parser.parse_args()
     # `ray job stop` sends SIGTERM; turn it into SystemExit so the finally
     # blocks run (killing the detached evolver actor) before Ray's SIGKILL.
     signal.signal(signal.SIGTERM, _exit_on_sigterm)
-    if args.hw:
+    if args.rtl:
+        from rtl_flow import run_rtl_flow
+        run_rtl_flow(
+            output_dir=args.out_dir,
+            iterations=args.iterations,
+            rtl_iterations=args.rtl_steps,
+            param_iterations=args.param_steps,
+            config_path=args.config,
+            n_patches=args.verilator_patches,
+            mock_bitstream=args.mock_bitstream,
+            mvout_spad=args.mvout_spad,
+        )
+    elif args.hw:
         _run_hw_flow(
             output_dir=args.out_dir,
             iterations=args.iterations,
             config_path=args.config,
             mock_bitstream=args.mock_bitstream,
             sw_only=args.sw_only,
+            mvout_spad=args.mvout_spad,
         )
     else:
         run_flow(
             output_dir=args.out_dir,
             config_path=args.config,
             sw_only=args.sw_only,
+            mvout_spad=args.mvout_spad,
         )
 
 

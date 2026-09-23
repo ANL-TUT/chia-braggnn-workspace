@@ -16,6 +16,12 @@ def _load_prompt(name: str, **subs: str) -> str:
 _GEMMINI_TUNE = _load_prompt("gemmini.md")
 _DEBUGGER_PREAMBLE = _load_prompt("debugger.md")
 _OPTIMIZER_PREAMBLE = _load_prompt("optimizer.md")
+# AlphaEvolve problem_description section for runs on an mvout_spad-capable
+# bitstream (--mvout-spad).
+_MVOUT_SPAD_SECTION = _load_prompt("alphaevolve_mvout_spad.md")
+# --rtl loop: what the HW LLM does in each phase (appended to gemmini.md).
+_RTL_PHASE = _load_prompt("rtl_phase.md")
+_PARAM_PHASE = _load_prompt("param_phase.md")
 
 
 # ── SW search seed: the shipped Exo program ──────────────────────────

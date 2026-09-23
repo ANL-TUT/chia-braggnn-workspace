@@ -10,6 +10,12 @@
 #define DEQUANT_SCALE (11.0f / 127.0f)
 #define MAX_AVG_ERROR_PX 0.5f
 
+// Patches to run; a slow simulator (Verilator) builds with -DEVAL_PATCHES=<n>
+// to run only the first n. Unset, the code is the same as before.
+#ifndef EVAL_PATCHES
+#define EVAL_PATCHES NUM_TEST_PATCHES
+#endif
+
 static float patches[NUM_TEST_PATCHES][INPUT_DIM][INPUT_DIM];
 static int8_t preds[NUM_TEST_PATCHES][OUTPUT_UNITS][1][1];
 static int32_t patch_cycles[NUM_TEST_PATCHES];
@@ -23,7 +29,7 @@ int main(void) {
         patches[i][r][c] = test_inputs[i][r * INPUT_DIM + c];
 
   braggnn_eval(
-      NULL, NUM_TEST_PATCHES, (const float *)patches,
+      NULL, EVAL_PATCHES, (const float *)patches,
       (const int8_t *)conv1_weights_flat, conv1_bias,
       &(float){CNN_LAYERS_0_CONV_QUANT_ACC_SCALE},
       (const int8_t *)nlb_theta_weights_flat, nlb_theta_bias,
@@ -63,7 +69,7 @@ int main(void) {
   float total_x_error = 0.0f;
   float total_y_error = 0.0f;
 
-  for (size_t i = 0; i < NUM_TEST_PATCHES; i++) {
+  for (size_t i = 0; i < EVAL_PATCHES; i++) {
     uint64_t cycles = (uint64_t)(uint32_t)patch_cycles[i];
     total_cycles += cycles;
 
@@ -76,12 +82,12 @@ int main(void) {
             (unsigned long)cycles, err_x, err_y);
   }
 
-  float avg_x_error = total_x_error / NUM_TEST_PATCHES;
-  float avg_y_error = total_y_error / NUM_TEST_PATCHES;
+  float avg_x_error = total_x_error / EVAL_PATCHES;
+  float avg_y_error = total_y_error / EVAL_PATCHES;
   int failed = avg_x_error > MAX_AVG_ERROR_PX || avg_y_error > MAX_AVG_ERROR_PX;
 
   xprintf("Avg cycles: %lu\n",
-          (unsigned long)(total_cycles / NUM_TEST_PATCHES));
+          (unsigned long)(total_cycles / EVAL_PATCHES));
   xprintf("Avg error: (%.3f, %.3f) px (tolerance %.3f px)%s\n", avg_x_error,
           avg_y_error, (float)MAX_AVG_ERROR_PX, failed ? " FAIL" : "");
 

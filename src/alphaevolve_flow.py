@@ -17,7 +17,7 @@ from evolve_flows.evolver.types import EvolverInput
 from firesim import read_gemmini_params_h
 
 from constants import DEFAULT_OUTPUT_BASE, PACKAGE_DIR
-from prompts import _EXO_SEED, _GEMMINI_PY
+from prompts import _EXO_SEED, _GEMMINI_PY, _MVOUT_SPAD_SECTION
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,7 @@ def run_alphaevolve_search(
     hw_context: Optional[str] = None,
     fake_run: bool = False,
     gemmini_params_h: Optional[str] = None,
+    mvout_spad: bool = False,
 ):
     # *eval_dir* is resolved in the evolver container, where the evaluator runs;
     # the driver's own artifacts go through *dump* instead.
@@ -121,6 +122,7 @@ def run_alphaevolve_search(
         output_dir=eval_dir,
         fake_run=fake_run,
         gemmini_params_h=gemmini_params_h,
+        mvout_spad=mvout_spad,
         timeout=3600.0,
         max_retries=1,
     )
@@ -188,6 +190,15 @@ def run_alphaevolve_search(
             "changes (e.g. cascaded/restructured systolic arrays) that plain "
             f"parameter values don't capture:\n\n{hw_change_summary}"
             if hw_change_summary else ""
+        )
+        + (
+            f"\n\n{_MVOUT_SPAD_SECTION}"
+            if mvout_spad else
+            "\n\n## mvout_spad is not available\n\n"
+            "`st_acc_i8_act_spad`, `st_acc_i8_act_spad_v2` and "
+            "`do_st_acc_i8_act_spad` in `gemmini` need an mvout_spad-capable "
+            "bitstream, which is not deployed. Do not use them: candidates that "
+            "do are rejected before building."
         )
     )
 

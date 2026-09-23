@@ -1,10 +1,26 @@
+import logging
+import time
+
 from chia.base.ChiaFunction import get
 from chia.base.llm_call import QueryResult
 from chia.base.tools.BashTool import BashTool
 from chia.models.opencode import AdditionalModelProvider, OpenCodeLLM
 
 from constants import LLM_SYSTEM_MESSAGE, LLM_TIMEOUT_SECONDS, OPENCODE_MODEL
-from prompts import _DEBUGGER_PREAMBLE, _GEMMINI_TUNE, _OPTIMIZER_PREAMBLE
+from prompts import (
+    _DEBUGGER_PREAMBLE, _GEMMINI_TUNE, _OPTIMIZER_PREAMBLE, _PARAM_PHASE, _RTL_PHASE,
+)
+
+logger = logging.getLogger(__name__)
+
+# Newer Gemini Flash models reject a request whose last turn is the model's
+# (HTTP 400), and OpenCode sometimes sends one when it retries internally
+# after the model has thought, mostly while Vertex is overloaded
+# (anomalyco/opencode#45359, open). chia classifies it as InvalidRequestError
+# and does not retry; a fresh prompt is the known workaround, so retry those.
+_MODEL_TURN_ERROR = "Requests ending with a model turn are not supported"
+MODEL_TURN_RETRIES = 3
+MODEL_TURN_BACKOFF_SECONDS = 60
 
 
 def gemini_vertex_provider(model: str = OPENCODE_MODEL) -> AdditionalModelProvider:
@@ -46,11 +62,26 @@ def make_llm(chipyard_bash: BashTool):
 
 
 def _run_llm(llm, prompt: str, chipyard_bash: BashTool) -> QueryResult:
-    """Dispatch *prompt* to *llm*'s worker (its backend's creds resource)."""
+    """Dispatch *prompt* to *llm*'s worker (its backend's creds resource),
+    retrying the Gemini "model turn" 400 (see _MODEL_TURN_ERROR) with backoff.
+    A retry is a fresh OpenCode session on the same chipyard tree, so edits
+    the failed session already made stay and the new one continues from them."""
     resources = {"opencode_creds": 1}
-    return get(
-        llm.prompt.options(resources=resources).chia_remote(llm, prompt, [chipyard_bash])
-    )
+    for attempt in range(MODEL_TURN_RETRIES + 1):
+        try:
+            return get(
+                llm.prompt.options(resources=resources).chia_remote(
+                    llm, prompt, [chipyard_bash])
+            )
+        except Exception as e:  # noqa: BLE001 -- only the model-turn 400 is retried
+            if _MODEL_TURN_ERROR not in str(e) or attempt == MODEL_TURN_RETRIES:
+                raise
+            wait = MODEL_TURN_BACKOFF_SECONDS * 2 ** attempt
+            logger.warning(
+                "OpenCode hit the Gemini model-turn 400 (try %d/%d); retrying "
+                "in %ds", attempt + 1, MODEL_TURN_RETRIES + 1, wait,
+            )
+            time.sleep(wait)
 
 
 def implement(llm, chipyard_bash: BashTool) -> QueryResult:
@@ -71,3 +102,15 @@ def optimize(llm, chipyard_bash: BashTool, feedback: str) -> QueryResult:
     debug(), whose preamble is framed around diagnosing a failure. Session
     reuse works the same way as debug()."""
     return _run_llm(llm, f"{_OPTIMIZER_PREAMBLE}\n\n{feedback}", chipyard_bash)
+
+
+def rtl_edit(llm, chipyard_bash: BashTool, context: str) -> QueryResult:
+    """--rtl loop, RTL phase: one microarchitecture change. OpenCode calls are
+    independent, so every call carries the full task plus *context* (the
+    Verilator numbers so far and the result of the previous step)."""
+    return _run_llm(llm, f"{_GEMMINI_TUNE}\n\n{_RTL_PHASE}\n\n{context}", chipyard_bash)
+
+
+def param_tune(llm, chipyard_bash: BashTool, context: str) -> QueryResult:
+    """--rtl loop, parameter phase: tune Configs.scala for the accepted RTL."""
+    return _run_llm(llm, f"{_GEMMINI_TUNE}\n\n{_PARAM_PHASE}\n\n{context}", chipyard_bash)

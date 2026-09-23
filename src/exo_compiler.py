@@ -157,7 +157,11 @@ def build_elf(work_dir: str) -> dict:
 
 
 @ChiaFunction(resources={"exo_build": 1})
-def build_candidate_elf(program_source: str, gemmini_params_h: str | None = None) -> dict:
+def build_candidate_elf(
+    program_source: str,
+    gemmini_params_h: str | None = None,
+    extra_cflags: str = "",
+) -> dict:
     """Build one AlphaEvolve candidate in an isolated temporary directory.
 
     The candidate crosses the Ray boundary as source text because the Evolver
@@ -169,9 +173,16 @@ def build_candidate_elf(program_source: str, gemmini_params_h: str | None = None
     exo/include/gemmini_params.h -- the co-design loop passes the header that
     elaborating this attempt's hardware generated, so the C side (gemmini.h,
     gemm_malloc) matches the Chisel the LLM changed.
+
+    *extra_cflags* is appended to the harness build's EXTRA_CFLAGS, e.g.
+    ``-DEVAL_PATCHES=3`` for a short run on a slow simulator.
     """
     import exo  # exo-lang, installed in the container
 
+    make_command = [
+        f"{arg} {extra_cflags}" if extra_cflags and arg.startswith("EXTRA_CFLAGS=") else arg
+        for arg in MAKE_COMMAND
+    ]
     with tempfile.TemporaryDirectory(prefix="chia-braggnn-candidate-") as tmp:
         build = Path(tmp)
         source_path = build / "braggnn_schedule.py"
@@ -198,7 +209,7 @@ def build_candidate_elf(program_source: str, gemmini_params_h: str | None = None
                     "braggnn_schedule",
                 ],
             ),
-            ("build", MAKE_COMMAND),
+            ("build", make_command),
         ]
         for stage, cmd in steps:
             try:

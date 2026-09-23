@@ -34,9 +34,17 @@ uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- pyt
 
 # HW + SW co-design（Chisel 編集 → Hammer elaborate / syn と bitstream ビルド → AlphaEvolve）
 uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- python chia/braggnn_alphaevolve_loop.py --hw --iterations 3
+
+# RTL ループ（OpenCode の RTL 編集 → パラメータ調整。各ステップを Verilator で ISA 不変・出力 bit 一致・高速化の
+# 3 条件で採否判定し、不採用は自動で巻き戻す → 採用があれば bitstream ビルド → AlphaEvolve → 結果を OpenCode へ）
+uv run chia job submit --address <ADDR> --working-dir . \
+  --runtime-env-json '{"env_vars": {"RAY_JOB_STOP_WAIT_TIME_S": "120"}}' \
+  -- python src/braggnn_alphaevolve_loop.py --rtl --iterations 2 --rtl-steps 3 --param-steps 2
 ```
 
 どちらも結果は `~/braggnn_loop_runs/<timestamp>/`。残すものは `results/` にコピーしてコミット。
+
+AlphaEvolve 版は、bitstream が mvout_spad（gemmini4xraymodels a7c2b9c 以降）に対応しているときだけ `--mvout-spad` を付ける。付けると `gemmini.py` の `st_acc_i8_act_spad*` を探索で使えるようになり、付けないとそれを使った候補はビルド前に弾かれる。
 
 ## システム構成
 

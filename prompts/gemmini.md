@@ -13,6 +13,26 @@ It has three conv, non-local attention block (NLB), and four fc layers. The inpu
 
 Don't change RoCC interface and evaluation infrastructer such as FireSim, Verilator, and Chipyard.
 
+Keep the ISA exactly as it is: the RoCC commands, their funct codes and field
+layouts (`GemminiISA.scala`), the scratchpad/accumulator address encoding they
+carry (`LocalAddr.scala`), the C macros that issue them
+(`software/gemmini-rocc-tests/include/gemmini.h`), and what every command
+computes. Change how commands execute, never what they are or what they
+produce. The software side is a fixed, human-verified program that relies on
+the current ISA; you cannot change it to match a new one.
+
+Every RTL change is first checked on a Verilator simulation, which runs the
+fixed software (the seed schedule and other known-good schedules) on your
+hardware. It is rejected before any FireSim build if
+- any of the ISA files above changed, or
+- any schedule's predictions differ from the seed's in any bit. A
+  microarchitectural change must not change the arithmetic, so leave the
+  datatypes and widths (`inputType`, `weightType`, `accType`,
+  `spatialArrayOutputType`) and the scaling / rounding
+  (`acc_scale_args`, `mvin_scale_args`) as they are. A result that is only
+  slightly off is a bug, typically a hazard your change introduced (e.g. a
+  completion signalled before the data is really written).
+
 ## Co-Design Loop
 
 You are the hardware half of a hardware/software co-design loop, not the
@@ -39,8 +59,8 @@ Given that division of labor:
   schedule the SW search could find for it -- not as a report on a fixed
   kernel. A high cycle count means the SW search could not find a good
   enough schedule for that hardware, which is itself a hint about what to
-  change (e.g. too few scratchpad banks to keep the mesh fed, an
-  under-provisioned reservation station serializing independent ops).
+  change (e.g. too few scratchpad banks to keep the mesh fed, or the mesh
+  stalling while it waits for scratchpad reads to return its operands).
 - The C API's internal implementation (tiling/blocking logic in
   `gemmini.h`/`gemmini_nn.h`) is out of scope for you under normal
   circumstances; edit it only if a hardware change you made requires a
@@ -274,68 +294,57 @@ Pass 2: EXE / control-overhead counters
 --- Inference 1/10 (pass 2) ---
 cycles: 51224
 exe: active=17627, control_q_block=557, flush=0, overlap_haz=0
-reservation station: full=47256, active=35887
 loop_matmul active=17730, loop_conv active=18662
 
 --- Inference 2/10 (pass 2) ---
 cycles: 51155
 exe: active=17608, control_q_block=557, flush=0, overlap_haz=0
-reservation station: full=47154, active=35887
 loop_matmul active=17743, loop_conv active=18662
 
 --- Inference 3/10 (pass 2) ---
 cycles: 51134
 exe: active=17605, control_q_block=557, flush=0, overlap_haz=0
-reservation station: full=47133, active=35884
 loop_matmul active=17729, loop_conv active=18662
 
 --- Inference 4/10 (pass 2) ---
 cycles: 51132
 exe: active=17597, control_q_block=557, flush=0, overlap_haz=0
-reservation station: full=47131, active=35874
 loop_matmul active=17725, loop_conv active=18661
 
 --- Inference 5/10 (pass 2) ---
 cycles: 51172
 exe: active=17608, control_q_block=557, flush=0, overlap_haz=0
-reservation station: full=47171, active=35887
 loop_matmul active=17743, loop_conv active=18662
 
 --- Inference 6/10 (pass 2) ---
 cycles: 51160
 exe: active=17604, control_q_block=557, flush=0, overlap_haz=0
-reservation station: full=47159, active=35888
 loop_matmul active=17736, loop_conv active=18664
 
 --- Inference 7/10 (pass 2) ---
 cycles: 51147
 exe: active=17613, control_q_block=557, flush=0, overlap_haz=0
-reservation station: full=47146, active=35892
 loop_matmul active=17741, loop_conv active=18669
 
 --- Inference 8/10 (pass 2) ---
 cycles: 51167
 exe: active=17608, control_q_block=557, flush=0, overlap_haz=0
-reservation station: full=47166, active=35888
 loop_matmul active=17742, loop_conv active=18664
 
 --- Inference 9/10 (pass 2) ---
 cycles: 51134
 exe: active=17605, control_q_block=557, flush=0, overlap_haz=0
-reservation station: full=47133, active=35884
 loop_matmul active=17729, loop_conv active=18662
 
 --- Inference 10/10 (pass 2) ---
 cycles: 51187
 exe: active=17597, control_q_block=557, flush=0, overlap_haz=0
-reservation station: full=47186, active=35874
 loop_matmul active=17729, loop_conv active=18661
 
 ==============================================
 Avg cycles over 10 runs (pass 2): 51161
 Avg over 10 runs:
 exe: active=17607, control_q_block=557, flush=0, overlap_haz=0
-reservation station: full=47163, active=35884
 loop_matmul active=17734, loop_conv active=18662
 ==============================================
 
@@ -466,26 +475,26 @@ The results of per-layer hardware counters is below.
   | fc3 | 18 | 1 | 794 | 802 | 796 | 0 | 0 | 0 |
   | fc4 | 18 | 1 | 774 | 782 | 776 | 0 | 0 | 0 |
   | output | 18 | 1 | 770 | 778 | 772 | 0 | 0 | 0 |
-- ## Pass 2 — Execute / Reservation Station / Loop Counters
+- ## Pass 2 — Execute / Loop Counters
   
-  | Kernel | exe active | control_q_block | flush | overlap_haz | RS full | RS active | loop_matmul active |
-  |---|---|---|---|---|---|---|---|
-  | conv1 | 1173 | 0 | 0 | 0 | 4302 | 3042 | 338 |
-  | theta | 772 | 0 | 0 | 0 | 3452 | 2201 | 225 |
-  | phi | 767 | 0 | 0 | 0 | 3438 | 2202 | 225 |
-  | nlb_g | 772 | 0 | 0 | 0 | 3439 | 2201 | 225 |
-  | attn_logits | 1633 | 0 | 0 | 0 | 3010 | 2427 | 2333 |
-  | attn_softmax | 3932 | 0 | 0 | 0 | 7304 | 7365 | 7368 |
-  | attended_matmul | 1615 | 0 | 0 | 0 | 2953 | 2356 | 2173 |
-  | nlb_out_conv | 738 | 0 | 0 | 0 | 4120 | 2819 | 259 |
-  | resadd | 0 | 0 | 0 | 0 | 5826 | 5677 | 4428 |
-  | conv2 | 4131 | 358 | 0 | 0 | 8471 | 8102 | 1113 |
-  | conv3 | 821 | 208 | 0 | 0 | 2567 | 1353 | 247 |
-  | fc1 | 533 | 0 | 0 | 0 | 1394 | 737 | 509 |
-  | fc2 | 45 | 0 | 0 | 0 | 848 | 141 | 47 |
-  | fc3 | 45 | 0 | 0 | 0 | 819 | 145 | 47 |
-  | fc4 | 45 | 0 | 0 | 0 | 797 | 145 | 47 |
-  | output | 45 | 0 | 0 | 0 | 796 | 139 | 46 |
+  | Kernel | exe active | control_q_block | flush | overlap_haz | loop_matmul active |
+  |---|---|---|---|---|---|
+  | conv1 | 1173 | 0 | 0 | 0 | 338 |
+  | theta | 772 | 0 | 0 | 0 | 225 |
+  | phi | 767 | 0 | 0 | 0 | 225 |
+  | nlb_g | 772 | 0 | 0 | 0 | 225 |
+  | attn_logits | 1633 | 0 | 0 | 0 | 2333 |
+  | attn_softmax | 3932 | 0 | 0 | 0 | 7368 |
+  | attended_matmul | 1615 | 0 | 0 | 0 | 2173 |
+  | nlb_out_conv | 738 | 0 | 0 | 0 | 259 |
+  | resadd | 0 | 0 | 0 | 0 | 4428 |
+  | conv2 | 4131 | 358 | 0 | 0 | 1113 |
+  | conv3 | 821 | 208 | 0 | 0 | 247 |
+  | fc1 | 533 | 0 | 0 | 0 | 509 |
+  | fc2 | 45 | 0 | 0 | 0 | 47 |
+  | fc3 | 45 | 0 | 0 | 0 | 47 |
+  | fc4 | 45 | 0 | 0 | 0 | 47 |
+  | output | 45 | 0 | 0 | 0 | 46 |
   
   *Note: `loop_conv active` = 0 for all kernels and is omitted.*  
 - ## Pass 3 — Controller Busy Breakdown

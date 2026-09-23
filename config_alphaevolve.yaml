@@ -3,7 +3,7 @@
 #
 # Usage:  python chia/braggnn_alphaevolve_loop.py --config config_alphaevolve.yaml
 
-max_iterations: 100        # SW search budget (maps to max_programs_evaluated in the backend)
+max_iterations: 30        # SW search budget (maps to max_programs_evaluated in the backend)
 log_level: "INFO"
 file_suffix: ".py"
 

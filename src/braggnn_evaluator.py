@@ -76,7 +76,25 @@ def source_sha256(program_solution: str) -> str:
 _FORBIDDEN_EXO = re.compile(r"\bunsafe_[A-Za-z_]+|\b_loopir_proc\b|\bLoopIR\b")
 
 
-def build_braggnn_binary(program_solution: str, gemmini_params_h: Optional[str] = None) -> Any:
+# gemmini.py's accumulator -> scratchpad move-out instrs. They issue
+# k_MVOUT_SPAD, which only a bitstream built from gemmini4xraymodels a7c2b9c or
+# later understands; elsewhere they would hang or corrupt the run on FireSim.
+_MVOUT_SPAD = re.compile(r"\b(?:do_)?st_acc_i8_act_spad(?:_v2)?\b")
+
+
+def build_braggnn_binary(
+    program_solution: str,
+    gemmini_params_h: Optional[str] = None,
+    mvout_spad: bool = False,
+) -> Any:
+    if not mvout_spad and (spad := _MVOUT_SPAD.search(program_solution)):
+        return ray.put(BraggnnBuildResult(
+            success=False, binary=b"", stage="llm",
+            stdout_tail=(
+                f"rejected before building: `{spad.group(0)}` needs mvout_spad, "
+                "which the deployed hardware does not support"
+            ),
+        ))
     banned = _FORBIDDEN_EXO.search(program_solution)
     if banned:
         return ray.put(BraggnnBuildResult(
@@ -103,12 +121,15 @@ class BraggnnEvaluator(ChiaEvaluator):
         output_dir: str,
         fake_run: bool = False,
         gemmini_params_h: Optional[str] = None,
+        mvout_spad: bool = False,
         **kwargs: Any,
     ) -> None:
         self._firesim_ready = firesim_ready
         # This attempt's elaborated gemmini_params.h for every candidate build
         # (None = the header shipped in exo/include).
         self._gemmini_params_h = gemmini_params_h
+        # Whether the bitstream supports mvout_spad (see _MVOUT_SPAD).
+        self._mvout_spad = mvout_spad
         # --sw-only test runs: no FireSim node, so "run" = the ELF's size in bytes.
         self._fake_run = fake_run
         # itertools.count().next() is a single GIL-protected C call, so it's
@@ -163,7 +184,9 @@ class BraggnnEvaluator(ChiaEvaluator):
     def _build(self, program_solution: str) -> Any:
         idx = next(self._candidate_counter)
         self._save_candidate_source(program_solution, idx)
-        return build_braggnn_binary(program_solution, self._gemmini_params_h)
+        return build_braggnn_binary(
+            program_solution, self._gemmini_params_h, self._mvout_spad
+        )
 
     def _save_candidate_source(self, program_solution: str, idx: int) -> None:
         """Persist every candidate AlphaEvolve generates (not just the best
