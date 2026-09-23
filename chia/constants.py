@@ -26,7 +26,7 @@ LLM_SYSTEM_MESSAGE = (
     "You are an expert Chisel / RISC-V engineer specializing in RoCC "
     "accelerators for the Chipyard / Rocket / Gemmini ecosystem."
 )
-LLM_TIMEOUT_SECONDS = 1800
+LLM_TIMEOUT_SECONDS = 3600
 
 # ---------------------------------------------------------------------------
 # Output

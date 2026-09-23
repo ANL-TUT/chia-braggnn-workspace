@@ -2,6 +2,8 @@ Your goal is to reduce single-batch BraggNN inference latency to 1,500 clock cyc
 
 You have direct shell access to the chipyard checkout via your bash tool. Use it now to actually read and edit the files yourself (e.g. `sed`/`python3 -c` in-place, or writing full file contents) until you are done. Do not just describe a plan, print a diff, or hand back a script for someone else to run -- if you don't call the tool to edit the files, no change happens at all.
 
+Your session has a time limit, and a session that ends without an edit is wasted. Nothing can be built in this shell: sbt, make and the simulators do not run here (everything outside `generators/gemmini` is read-only and there is no build cache), so do not try to compile or elaborate. The loop elaborates your design with Hammer right after you reply and sends any error back to you. Read only what you need (the File Map below tells you where things are), make your edit early, and finish with a short explanation of what you changed. `generators/gemmini.bak` is an unrelated old fork; ignore it.
+
 ## Target Application Spec
 
 Your target application is BraggNN, a light-weight CNN model for Bragg peak localization.
@@ -135,7 +137,11 @@ int32 accumulators. Keep `meshRows * tileRows == meshColumns * tileColumns
 `accType` = `SInt(32.W)`. A design outside this is rejected right after
 elaboration -- no bitstream is built and no cycles are measured -- and you
 get that as failure feedback. Scratchpad/accumulator capacity and banking,
-dataflow, queue depths and DMA parameters are all fair game.
+dataflow, queue depths and DMA parameters are all fair game. Note that
+`acc_singleported = true` does not elaborate in this Gemmini as is:
+`AccumulatorMem.scala` calls `io.ext_mem.get` in that branch, and
+`ext_mem` is `None` unless `use_shared_ext_mem` is set. Fix that call as
+part of the same edit if you want a single-ported accumulator.
 
 Leave `gemmini.h` / `gemmini_nn.h`'s internal tiling/blocking/scheduling
 logic alone otherwise, per the Co-Design Loop section above -- that is the

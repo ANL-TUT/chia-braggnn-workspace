@@ -28,7 +28,7 @@ import ray
 from chia.base.ChiaFunction import get
 
 from alphaevolve_flow import DEFAULT_CONFIG, SEED_PROGRAM, run_alphaevolve_search
-from chipyard_ops import capture_chisel_baseline
+from chipyard_ops import capture_chisel_baseline, collect_diff
 from constants import (
     BUILD_CONFIG,
     CHIPYARD_DIFF_SUBMODULES,
@@ -168,6 +168,14 @@ def _run_hw_flow(
             CHIPYARD_PATH, CHIPYARD_DIFF_SUBMODULES
         )
     )
+    # The Chisel diff of the hardware last built (at first: the unedited
+    # checkout, which already differs from HEAD). An attempt whose diff equals
+    # it changed nothing, so it is skipped instead of rebuilding the same design.
+    last_diffs = get(
+        collect_diff.options(resources={"manager": 0.05}).chia_remote(
+            CHIPYARD_PATH, CHIPYARD_DIFF_SUBMODULES, baseline
+        )
+    )[1]
 
     def _new_chipyard_bash() -> SandboxedBashTool:
         return SandboxedBashTool(
@@ -189,25 +197,47 @@ def _run_hw_flow(
     best_run = None
     best_score = None
     exo_seed = SEED_PROGRAM
+    logged_feedback = None  # a skipped attempt keeps feedback; log it once
     for attempt in range(iterations):
-        if feedback is not None:
+        if feedback is not None and feedback is not logged_feedback:
             _log_attempt(output_dir, attempt - 1, feedback)
-        if feedback is None:
-            impl = implement(llm, chipyard_bash)
-            dump_llm(dump, "implement", impl)
-            logger.info("Implement finished (success=%s)", impl.success)
-        elif feedback_kind == "success":
-            impl = optimize(llm, chipyard_bash, feedback)
-            dump_llm(dump, f"optimize_attempt{attempt}", impl)
-            logger.info("Optimize finished (attempt %d, success=%s)", attempt + 1, impl.success)
-        else:
-            impl = debug(llm, chipyard_bash, feedback)
-            dump_llm(dump, f"debug_attempt{attempt}", impl)
-            logger.info("Debug finished (attempt %d, success=%s)", attempt + 1, impl.success)
+            logged_feedback = feedback
+        impl = None
+        llm_error = None
+        try:
+            if feedback is None:
+                impl = implement(llm, chipyard_bash)
+                dump_llm(dump, "implement", impl)
+                logger.info("Implement finished (success=%s)", impl.success)
+            elif feedback_kind == "success":
+                impl = optimize(llm, chipyard_bash, feedback)
+                dump_llm(dump, f"optimize_attempt{attempt}", impl)
+                logger.info("Optimize finished (attempt %d, success=%s)", attempt + 1, impl.success)
+            else:
+                impl = debug(llm, chipyard_bash, feedback)
+                dump_llm(dump, f"debug_attempt{attempt}", impl)
+                logger.info("Debug finished (attempt %d, success=%s)", attempt + 1, impl.success)
+        except Exception as e:  # noqa: BLE001 -- an LLM/API error must not end a long run
+            llm_error = f"{type(e).__name__}: {e}"
+            logger.error("LLM call failed (attempt %d): %s", attempt + 1, llm_error)
 
         chipyard_bash.stop()
 
         diffs = collect_chisel_diff(dump, attempt, baseline)
+        if diffs is not None and diffs == last_diffs:
+            reason = (f"the LLM call failed ({_tail(llm_error, 500)})" if llm_error
+                      else "the LLM changed no Chisel file")
+            logger.error("Attempt %d made no hardware change (%s); skipping it",
+                         attempt + 1, reason)
+            with open(Path(output_dir) / "attempts.txt", "a") as f:
+                f.write(f"===== attempt {attempt + 1} =====\nskipped: {reason}\n\n")
+            # feedback / feedback_kind stay as they were, so the next attempt
+            # repeats the same request.
+            if attempt + 1 < iterations:
+                chipyard_bash = _new_chipyard_bash()
+            continue
+        if diffs is not None:
+            last_diffs = diffs
         if diffs is None:
             logger.error(
                 "collect_chisel_diff failed (attempt %d), skipping "
@@ -305,7 +335,7 @@ def _run_hw_flow(
             run = run_alphaevolve_search(
                 dump, attempt, exo_seed, bitstream_ref,
                 config_path=config_path, eval_dir=_eval_dir(output_dir),
-                hw_change_summary=_tail(impl.result),
+                hw_change_summary=_tail(impl.result if impl else ""),
                 hw_context=params_h, gemmini_params_h=params_h,
             )
         except BaseException:
@@ -378,7 +408,7 @@ def _run_hw_flow(
         if attempt + 1 < iterations:
             chipyard_bash = _new_chipyard_bash()
 
-    if feedback is not None:
+    if feedback is not None and feedback is not logged_feedback:
         _log_attempt(output_dir, iterations - 1, feedback)
     logger.info("Loop finished (%d attempt(s))", iterations)
     result = best_run or run
