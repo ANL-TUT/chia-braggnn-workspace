@@ -89,9 +89,9 @@ alphaevolve:
       for the next operator, avoiding a DRAM round trip that the whole-layer
       loop macros always perform.
     - `braggnn_schedule_fusion.py` keeps the loop macros for conv1, the NLB and
-      the fully connected layers, but lowers conv2 and conv3. It measures
-      48,113 cycles versus 45,170 for the seed, so it is also slower overall.
-      Its useful ideas are more targeted:
+      the fully connected layers, but lowers conv2 and conv3 and fuses them. It
+      measures 48,464 cycles versus 45,170 for the seed, so it is also
+      slower overall. Its useful ideas are more targeted:
         - A weight-stationary matmul command costs about 17 cycles regardless
           of N because preload pushes 16 rows into the array. With one output
           row per column position, N is only 7 and utilization is 7/17. Stage
@@ -107,6 +107,27 @@ alphaevolve:
         - Fixed-address `Memory` subclasses can hold Gemmini scratchpad data,
           and transposing weights once before the patch loop can let one mvin
           transfer four blocks at a time.
+        - conv2's result moves from the accumulator straight into conv3's
+          scratchpad input, with no DRAM round trip, through
+          `st_acc_i8_act_spad` / `st_acc_i8_act_spad_v2` in `gemmini`: one
+          `gemmini_extended_mvout_spad`, with the same scale / clamp / ReLU as
+          a DRAM mvout but writing the i8 rows into the scratchpad. Its
+          `fuse_conv2_conv3` derives this without unsafe options: leave the
+          producer's store and the consumer's input staging as plain loops,
+          inline both layers into one proc, cut the store loop into pieces and
+          duplicate each (`add_loop` then `unroll_loop` on the idempotent
+          store) as many times as the staging reads it, `fuse` each copy with
+          the staging piece that reads it, `inline_assign` the store,
+          `delete_buffer` the intermediate once nothing uses it, then
+          `join_loops` and `replace` with the instr. One mvout_spad must write
+          contiguous rows (the hardware tracks its destination as `rows`
+          consecutive rows) and writes whole 16-column rows. Exo treats two
+          fixed-address buffers as unrelated, so the consumer's scratchpad
+          input and accumulator must not overlap the producer's; no fence is
+          needed between the layers. Here the fusion costs about 350 cycles (48,106 without it),
+          because conv3 stages three kcol-shifted copies of its input (42
+          five-row mvout_spads instead of 14 mvouts and 21 mvins); it pays off
+          when the consumer reads one contiguous copy of the producer's output.
 
     Two measured constraints are especially important:
 
