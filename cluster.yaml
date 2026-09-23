@@ -53,8 +53,9 @@ available_node_types:
         container_name: "chia-sky130"
         pull_before_run: False
         run_options:
-          - "--network host" # For checking the license
           - "--user ${HOST_UID}:${HOST_GID}"
+          # --user does not set USER, and Genus's startup scripts read $USER.
+          - "-e USER=${USER}"
           - "-v ${CHIPYARD_PATH}:${CHIPYARD_PATH}"
           - "-e CADENCE_HOME=/home/ray/cadence"
           - "-v ${VLSI_CADENCE_HOME}:/home/ray/cadence"
