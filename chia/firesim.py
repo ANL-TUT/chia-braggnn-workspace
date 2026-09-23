@@ -13,17 +13,11 @@ from ray import ObjectRef
 
 from chia.base.ChiaFunction import ChiaFunction, get
 from chia.base.tools.BashTool import BashTool
-from chia.chipyard.chisel_build_node import ChiselBuildNode
-from chia.chipyard.state_def import BuildArtifact, BuildTarget
 
 from chipyard_ops import collect_diff
 from constants import (
-    BUILD_CONFIG,
-    BUILD_CONFIG_PACKAGE,
     CHIPYARD_DIFF_SUBMODULES,
     CHIPYARD_PATH,
-    CHISEL_BUILD_MAKE_JOBS,
-    CHISEL_BUILD_TIMEOUT_SECONDS,
     FIRESIM_BUILD_TIMEOUT_SECONDS,
     FIRESIM_CONFIG_HWDB_PATH,
     FIRESIM_CONFIG_RUNTIME_PATH,
@@ -222,47 +216,6 @@ def collect_chisel_diff(
     logger.info("Collected chisel diff (attempt %d): %d repo(s) changed",
                 attempt, sum(1 for t in diffs.values() if t))
     return diffs
-
-
-def chisel_build(dump: Dumper, attempt: int):
-    node = ChiselBuildNode(
-        chipyard_path=CHIPYARD_PATH,
-        config=BUILD_CONFIG,
-        config_package=BUILD_CONFIG_PACKAGE,
-        target=BuildTarget.VERILATOR,
-        make_jobs=CHISEL_BUILD_MAKE_JOBS,
-        timeout_seconds=CHISEL_BUILD_TIMEOUT_SECONDS,
-    )
-    logger.info("Building %s (attempt %d)", BUILD_CONFIG, attempt)
-    artifact = get(
-        node.build.options(resources={"manager": 1}).chia_remote(node)
-    )
-    dump.text(f"chisel_build_attempt{attempt}.stdout.txt", artifact.stdout)
-    dump.text(f"chisel_build_attempt{attempt}.stderr.txt", artifact.stderr)
-    logger.info("Build %s (rc=%s)", "OK" if artifact.success else "FAILED", artifact.returncode)
-    return artifact
-
-
-def chisel_build_mock(dump: Dumper, attempt: int) -> BuildArtifact:
-    """Test double for chisel_build: skips the real (slow) Verilator build
-    and returns a fabricated, always-successful BuildArtifact."""
-    logger.info("Building %s (attempt %d) [mock]", BUILD_CONFIG, attempt)
-    artifact = BuildArtifact(
-        name="chipyard",
-        simulator_binary_content=b"",
-        simulator_binary_name="",
-        config=BUILD_CONFIG,
-        config_package=BUILD_CONFIG_PACKAGE,
-        target=BuildTarget.VERILATOR,
-        success=True,
-        stdout="[mock] chisel_build skipped",
-        stderr="",
-        returncode=0,
-    )
-    dump.text(f"chisel_build_attempt{attempt}.stdout.txt", artifact.stdout)
-    dump.text(f"chisel_build_attempt{attempt}.stderr.txt", artifact.stderr)
-    logger.info("Build %s (rc=%s) [mock]", "OK" if artifact.success else "FAILED", artifact.returncode)
-    return artifact
 
 
 def _register_hwdb_entry() -> tuple[bool, str]:

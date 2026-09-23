@@ -1,10 +1,8 @@
 """AlphaEvolve optimization loop for the BraggNN Exo kernel on Gemmini.
 
-The normal entry point searches the Exo schedule against the currently deployed
-FireSim bitstream and does not modify the hardware.  The experimental HW + SW
-co-design implementation is kept in this module but is not called by the CLI.
-
-The retained co-design implementation has two halves per attempt:
+By default the CLI searches the Exo schedule against the currently deployed
+FireSim bitstream and does not modify the hardware.  With --hw it runs the
+HW + SW co-design loop instead, which has two halves per attempt:
   1. HW: OpenCode (Gemini on Vertex AI) edits the Gemmini Chisel sources on the
      FireSim node, then the design is elaborated by Hammer's buildfile (the
      build check), and the FireSim bitstream build and Genus synthesis
@@ -208,14 +206,20 @@ def _run_hw_flow(
                 chipyard_bash = _new_chipyard_bash()
             continue
 
+        # The vlsi worker is the loop's only build check and the only source
+        # of an up-to-date gemmini_params.h, so without it the attempt cannot
+        # be evaluated. That is an infrastructure problem, not the LLM's, so
+        # stop instead of feeding it back as a failure.
+        if elab is None:
+            raise RuntimeError(
+                f"vlsi worker unavailable (attempt {attempt + 1}); see "
+                f"{ppa_job.out / 'summary.json'}. Check that the chia-sky130 "
+                'container is up and no other job holds {"chipyard": 1}.'
+            )
+
         # Elaboration regenerates gemmini_params.h from the edited Configs.scala;
         # read it now, before the bitstream build elaborates again, and build
         # every AlphaEvolve candidate against it.
-        if elab is None:
-            logger.warning(
-                "No elaboration this attempt (vlsi worker unavailable); "
-                "gemmini_params.h may not reflect the Chisel edit",
-            )
         params_h = get(
             read_gemmini_params_h.options(resources={"manager": 0.05}).chia_remote()
         )
@@ -387,12 +391,35 @@ def main() -> None:
         help="Laptop test without a FireSim node: only the AlphaEvolve search, "
              "with fake runs (cycles = ELF size)",
     )
-    args = parser.parse_args()
-    run_flow(
-        output_dir=args.out_dir,
-        config_path=args.config,
-        sw_only=args.sw_only,
+    parser.add_argument(
+        "--hw", action="store_true",
+        help="Run the HW + SW co-design loop (Chisel edit -> Hammer "
+             "elaboration/synthesis, bitstream build -> AlphaEvolve on FireSim)",
     )
+    parser.add_argument(
+        "--iterations", type=int, default=MAX_ATTEMPTS,
+        help="--hw only: number of hardware attempts",
+    )
+    parser.add_argument(
+        "--mock-bitstream", action="store_true",
+        help="--hw only: skip the bitstream build and reuse the last built "
+             "hwdb entry",
+    )
+    args = parser.parse_args()
+    if args.hw:
+        _run_hw_flow(
+            output_dir=args.out_dir,
+            iterations=args.iterations,
+            config_path=args.config,
+            mock_bitstream=args.mock_bitstream,
+            sw_only=args.sw_only,
+        )
+    else:
+        run_flow(
+            output_dir=args.out_dir,
+            config_path=args.config,
+            sw_only=args.sw_only,
+        )
 
 
 if __name__ == "__main__":

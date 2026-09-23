@@ -31,6 +31,9 @@ uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- pyt
 
 # AlphaEvolve 版（設定は config_alphaevolve.yaml）
 uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- python chia/braggnn_alphaevolve_loop.py
+
+# HW + SW co-design（Chisel 編集 → Hammer elaborate / syn と bitstream ビルド → AlphaEvolve）
+uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- python chia/braggnn_alphaevolve_loop.py --hw --iterations 3
 ```
 
 どちらも結果は `~/braggnn_loop_runs/<timestamp>/`。残すものは `results/` にコピーしてコミット。

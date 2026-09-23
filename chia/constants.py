@@ -62,12 +62,9 @@ CHIPYARD_WRITABLE_DIRS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Chisel build (firesim.chisel_build -> ChiselBuildNode)
+# Chipyard CONFIG the HW loop elaborates (hammer_ppa.PpaJob)
 # ---------------------------------------------------------------------------
 BUILD_CONFIG = "GemminiRocketConfig"
-BUILD_CONFIG_PACKAGE = "chipyard"
-CHISEL_BUILD_TIMEOUT_SECONDS = 60000
-CHISEL_BUILD_MAKE_JOBS = 4
 
 # ---------------------------------------------------------------------------
 # Exo / BraggNN SW loop

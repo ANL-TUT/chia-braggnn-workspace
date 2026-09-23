@@ -226,7 +226,7 @@ class PpaJob:
         """Run ``make buildfile``. Returns its ChipyardHammerResult -- check
         ``.success``: False means the design did not elaborate, i.e. the
         Chisel edit is broken -- or None if the vlsi worker could not be used
-        at all (infrastructure; the attempt just goes without PPA)."""
+        at all (infrastructure; the loop stops, see _run_hw_flow)."""
         logger.info("Hammer PPA: CONFIG=%s OBJ_DIR=%s (attempt %d)",
                     self.config, self.obj_dir, self.attempt)
         try:
@@ -236,7 +236,7 @@ class PpaJob:
             ray.get(self._node.placement_group.ready(),
                     timeout=VLSI_PG_READY_TIMEOUT_SECONDS)
             bf = get(self._make("buildfile", VLSI_BUILDFILE_TIMEOUT_SECONDS))
-        except Exception as e:  # noqa: BLE001 -- infra failure: skip PPA, keep the loop
+        except Exception as e:  # noqa: BLE001 -- infra failure: reported as None
             logger.warning("Hammer PPA unavailable (attempt %d): %s", self.attempt, e)
             self._finish(PpaResult(False, "buildfile", self.obj_dir, stderr_tail=str(e)))
             return None
