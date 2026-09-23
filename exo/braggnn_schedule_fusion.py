@@ -36,18 +36,22 @@ from braggnn_reference import (
 )
 from exo.API_cursors import ForCursor, InvalidCursor
 from exo.API_scheduling import (
+    add_loop,
     autofission,
     call_eqv,
+    cut_loop,
     delete_buffer,
     delete_config,
     divide_dim,
     divide_loop,
     expand_dim,
     fission,
+    fuse,
     inline,
     inline_assign,
     inline_window,
     insert_noop_call,
+    join_loops,
     lift_alloc,
     mult_dim,
     mult_loops,
@@ -60,8 +64,10 @@ from exo.API_scheduling import (
     resize_dim,
     rewrite_expr,
     set_memory,
+    shift_loop,
     simplify,
     stage_mem,
+    unroll_loop,
 )
 from exo.libs.memories import DRAM_STATIC, GEMM_ACCUM, GEMM_SCRATCH
 from exo.platforms.gemmini import old_fission_after
@@ -82,6 +88,8 @@ from gemmini import (
     matmul_acc_i8_trans_b,
     matmul_acc_i8_trans_b_v2,
     st_acc_i8_act,
+    st_acc_i8_act_spad,
+    st_acc_i8_act_spad_v2,
     st_acc_i8_act_v2,
 )
 
@@ -91,7 +99,9 @@ NLB_ROW_TILE = 8
 class GEMM_SCRATCH_FIXED(GEMM_SCRATCH):
     addresses: ClassVar[dict[str, int]] = {
         "input_tmp": 1,
-        "input_tmp_1": 1,
+        # conv3's input is written by conv2's mvout_spad while conv2's input
+        # may still be read, so it must not alias conv2's (rows 1..756).
+        "input_tmp_1": 1024,
         "weights_tmp": 4096,
         "weights_tmp_1": 6144,
     }
@@ -116,7 +126,8 @@ class GEMM_SCRATCH_FIXED(GEMM_SCRATCH):
 class GEMM_ACCUM_FIXED(GEMM_ACCUM):
     addresses: ClassVar[dict[str, int]] = {
         "res": 0x80000000,
-        "res_1": 0x80000000,
+        # conv3's bias load is issued before conv2's result is moved out.
+        "res_1": 0x80000000 + 128,
     }
 
     @classmethod
@@ -205,7 +216,9 @@ def sched_conv(cpu, in_dim, in_ch, out_ch, k, act=False):
     return gemmini
 
 
-def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
+def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k, fused_in=False, fused_out=False):
+    """fused_in / fused_out leave the input staging / the output store as
+    plain loops so that fuse_conv2_conv3 can connect them."""
     name = cpu.name()[: -len("_cpu")]
     out_dim = in_dim - k + 1
     och_blk = min(out_ch, 16)
@@ -327,12 +340,15 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
     gemmini = inline_window(gemmini, "dst = _")
     gemmini = simplify(gemmini)
 
-    gemmini = replace(gemmini, "for i1 in _:_ #2", ld_i8_block_strided_id1)
-    gemmini = call_eqv(gemmini, ld_i8_block_strided_id1, ld_i8_block_strided_id1_v2)
-    gemmini = inline(gemmini, ld_i8_block_strided_id1_v2)
-    gemmini = inline_window(gemmini, "src = _")
-    gemmini = inline_window(gemmini, "dst = _")
-    gemmini = simplify(gemmini)
+    if not fused_in:
+        gemmini = replace(gemmini, "for i1 in _:_ #2", ld_i8_block_strided_id1)
+        gemmini = call_eqv(
+            gemmini, ld_i8_block_strided_id1, ld_i8_block_strided_id1_v2
+        )
+        gemmini = inline(gemmini, ld_i8_block_strided_id1_v2)
+        gemmini = inline_window(gemmini, "src = _")
+        gemmini = inline_window(gemmini, "dst = _")
+        gemmini = simplify(gemmini)
 
     for _ in range(2):
         gemmini = replace(gemmini, "for m_i in _:_ #0", ld_acc_i32_repeat)
@@ -354,27 +370,214 @@ def sched_conv_fusion(cpu, in_dim, in_ch, out_ch, k):
         gemmini = simplify(gemmini)
 
     gemmini = hoist_acc_scale(gemmini, 4)
-    gemmini = replace(gemmini, "for ocol in _:_ #0", st_acc_i8_act)
-    gemmini = call_eqv(gemmini, st_acc_i8_act, st_acc_i8_act_v2)
-    gemmini = inline(gemmini, st_acc_i8_act_v2)
-    gemmini = inline_window(gemmini, "src = _")
-    gemmini = inline_window(gemmini, "dst = _")
-    gemmini = simplify(gemmini)
+    if not fused_out:
+        gemmini = replace(gemmini, "for ocol in _:_ #0", st_acc_i8_act)
+        gemmini = call_eqv(gemmini, st_acc_i8_act, st_acc_i8_act_v2)
+        gemmini = inline(gemmini, st_acc_i8_act_v2)
+        gemmini = inline_window(gemmini, "src = _")
+        gemmini = inline_window(gemmini, "dst = _")
+        gemmini = simplify(gemmini)
 
     gemmini = hoist_config(gemmini, "config_ld_i8_block_id2(_)", 3)
     gemmini = hoist_config(gemmini, "config_ld_repeat(_)", 2)
     gemmini = delete_config(gemmini, "config_ld_repeat(_) #1")
-    gemmini = hoist_config(gemmini, "config_ld_i8_block_id1(_)", 2)
+    if not fused_in:
+        gemmini = hoist_config(gemmini, "config_ld_i8_block_id1(_)", 2)
     gemmini = hoist_config(gemmini, "config_matmul_trans_b(_)", 5)
     gemmini = delete_config(gemmini, "config_matmul_trans_b(_) #1")
-    gemmini = hoist_config_after_store(
-        gemmini, "config_st_acc_i8(_)", 2, 0
-    )
-    gemmini = insert_noop_call(
-        gemmini, gemmini.find_loop("orow").after(), fence, []
-    )
+    if not fused_out:
+        gemmini = hoist_config_after_store(
+            gemmini, "config_st_acc_i8(_)", 2, 0
+        )
+        gemmini = insert_noop_call(
+            gemmini, gemmini.find_loop("orow").after(), fence, []
+        )
 
     return gemmini
+
+
+def _const(expr_cursor):
+    return expr_cursor.value()
+
+
+def _loop_range(loop):
+    return _const(loop.lo()), _const(loop.hi())
+
+
+def _pos(stmt):
+    n = 0
+    while not isinstance(stmt.prev(), InvalidCursor):
+        stmt = stmt.prev()
+        n += 1
+    return n
+
+
+def _nest(stmt, depth):
+    for _ in range(depth):
+        stmt = stmt.parent()
+    return stmt
+
+
+def fuse_conv2_conv3(p):
+    """Move conv2's output straight from the accumulator into conv3's
+    scratchpad input with mvout_spad, instead of mvout to conv2_out in DRAM
+    and mvin back.
+
+    conv3 stages its input once per kernel column kcol (input_tmp[kcol, ...]
+    holds columns kcol..kcol+4 of conv2_out), so each conv2 output column is
+    needed up to three times. The store loop is cut into the column ranges
+    [0,1) [1,2) [2,5) [5,6) [6,7), each piece is duplicated as many times as
+    it is read (add_loop + unroll_loop on the idempotent store), and every
+    copy is fused with the staging piece that reads it; inline_assign then
+    forwards the stored value, and conv2_out is deleted once nothing reads
+    or writes it. Finally the pieces of one kcol are joined back into a
+    5-column loop and replaced with the mvout_spad instruction.
+    """
+    # conv2's store: for orow, och_o, ocol, och_i: conv2_out[...] = ...
+    # conv3's staging: for kcol, i0, i1, i2_o, i2_i: input_tmp[...] = conv2_out[...]
+    store_depth = 4  # stmt -> och_i -> ocol -> och_o -> orow
+    for cut in (1, 2, 5, 6):
+        ocol = _nest(p.find_all("conv2_out[_] = _")[-1], 2)
+        p = cut_loop(p, ocol, cut)
+    for piece in range(4):
+        ocol = _nest(p.find_all("conv2_out[_] = _")[piece], 2)
+        p = fission(p, ocol.after(), n_lifts=2)
+
+    # How many kernel columns read each piece.
+    copies = {(0, 1): 1, (1, 2): 2, (2, 5): 3, (5, 6): 2, (6, 7): 1}
+    idx = 0
+    for (lo, hi), n in copies.items():
+        if n > 1:
+            nest = _nest(p.find_all("conv2_out[_] = _")[idx], store_depth)
+            p = add_loop(p, nest, "dup", n)
+            p = unroll_loop(p, p.find_loop("dup"))
+        idx += n
+
+    # Staging: one copy per kcol, in (i0, i2_o, i1, i2_i) order, cut into
+    # the same column pieces, each with its i1 loop shifted to the column.
+    stage_depth = 4  # stmt -> i2_i -> i1 -> i2_o -> i0 (after reorder)
+    kcol = _nest(p.find("input_tmp[_] = _"), 5)
+    p = reorder_loops(p, _nest(p.find("input_tmp[_] = _"), 3))
+    p = unroll_loop(p, kcol)
+    stage_cuts = {0: (1, 2), 1: (1, 4), 2: (3, 4)}
+    for k in (0, 1, 2):
+        for cut in reversed(stage_cuts[k]):
+            stmt = [
+                s for s in p.find_all("input_tmp[_] = _")
+                if _const(s.idx()[0]) == k
+            ][0]
+            p = cut_loop(p, _nest(stmt, 2), cut)
+        for piece in range(2):
+            stmt = [
+                s for s in p.find_all("input_tmp[_] = _")
+                if _const(s.idx()[0]) == k
+            ][piece]
+            p = fission(p, _nest(stmt, 2).after(), n_lifts=2)
+        for piece in range(3):
+            stmt = [
+                s for s in p.find_all("input_tmp[_] = _")
+                if _const(s.idx()[0]) == k
+            ][piece]
+            i1 = _nest(stmt, 2)
+            if k:
+                p = shift_loop(p, i1, _const(i1.lo()) + k)
+    p = simplify(p)
+
+    # The staging's allocation must precede the pieces it is fused with.
+    def first_store():
+        return _nest(p.find_all("conv2_out[_] = _")[0], store_depth)
+
+    while _pos(p.find_all("input_tmp : _")[1]) > _pos(first_store()):
+        p = reorder_stmts(p, p.find_all("input_tmp : _")[1].expand(1, 0))
+
+    # Pair the last remaining store copy with the staging piece that reads
+    # the same columns for the same kcol, move that piece up next to it,
+    # fuse the two nests and forward the stored value.
+    order = [
+        ((6, 7), 2), ((5, 6), 2), ((5, 6), 1), ((2, 5), 2), ((2, 5), 1),
+        ((2, 5), 0), ((1, 2), 1), ((1, 2), 0), ((0, 1), 0),
+    ]
+    for cols, k in order:
+        store = p.find_all("conv2_out[_] = _")[-1]
+        assert _loop_range(_nest(store, 2)) == cols, cols
+        while True:
+            store_nest = _nest(p.find_all("conv2_out[_] = _")[-1], store_depth)
+            stage = [
+                s for s in p.find_all("input_tmp[_] = _")
+                if _const(s.idx()[0]) == k
+                and _loop_range(_nest(s, 2)) == cols
+                and "conv2_out" in str(s)
+            ][0]
+            stage_nest = _nest(stage, stage_depth)
+            if _pos(stage_nest) == _pos(store_nest) + 1:
+                break
+            p = reorder_stmts(p, stage_nest.expand(1, 0))
+        for depth in (store_depth, 3, 2, 1):
+            store_loop = _nest(p.find_all("conv2_out[_] = _")[-1], depth)
+            p = fuse(p, store_loop, store_loop.next())
+        p = inline_assign(p, p.find_all("conv2_out[_] = _")[-1])
+    p = delete_buffer(p, "conv2_out : _")
+    p = simplify(p)
+
+    # Now nine nests write input_tmp[k, och_o, ocol - k + 5 * orow, och_i]
+    # from res. Sort them by (kcol, first column) so each kcol's pieces are
+    # adjacent, then fuse their orow / och_o loops and join the column loops.
+    def pieces():
+        return [
+            (_const(s.idx()[0]), _const(_nest(s, 2).lo()), _nest(s, store_depth))
+            for s in p.find_all("input_tmp[_] = _")
+        ]
+
+    for _ in range(len(pieces())):
+        for i in range(len(pieces()) - 1):
+            a, b = pieces()[i], pieces()[i + 1]
+            if a[:2] > b[:2]:
+                p = reorder_stmts(p, b[2].expand(1, 0))
+
+    for k in (0, 1, 2):
+        for depth in (store_depth, 3):
+            for _ in range(2):
+                first = [s for s in p.find_all("input_tmp[_] = _")
+                         if _const(s.idx()[0]) == k][0]
+                loop = _nest(first, depth)
+                p = fuse(p, loop, loop.next())
+        for _ in range(2):
+            first = [s for s in p.find_all("input_tmp[_] = _")
+                     if _const(s.idx()[0]) == k][0]
+            ocol = _nest(first, 2)
+            p = join_loops(p, ocol, ocol.next())
+        if k:
+            first = [s for s in p.find_all("input_tmp[_] = _")
+                     if _const(s.idx()[0]) == k][0]
+            p = shift_loop(p, _nest(first, 2), 0)
+        p = simplify(p)
+
+    # Each (kcol, orow, och_o) is now a 5 x 16 block copy: one mvout_spad.
+    for k in (0, 1, 2):
+        first = [s for s in p.find_all("input_tmp[_] = _")
+                 if _const(s.idx()[0]) == k][0]
+        p = replace(p, _nest(first, 2), st_acc_i8_act_spad)
+    for _ in range(3):
+        p = call_eqv(p, "st_acc_i8_act_spad(_)", st_acc_i8_act_spad_v2)
+        p = inline(p, "st_acc_i8_act_spad_v2(_)")
+        p = inline_window(p, "src = _")
+        p = inline_window(p, "dst = _")
+        p = simplify(p)
+
+    # Lift each kcol's store config out of its orow / och_o loops; the three
+    # write the same scale, stride and activation, so keep only the first.
+    for i in range(3):
+        cfg = [c for c in p.find_all("config_st_acc_i8(_)")
+               if isinstance(c.parent(), ForCursor)][0]
+        p = fission(p, cfg.after(), n_lifts=2)
+        for _ in range(2):
+            cfg = [c for c in p.find_all("config_st_acc_i8(_)")
+                   if isinstance(c.parent(), ForCursor)][0]
+            p = remove_loop(p, cfg.parent())
+    # config_st_acc_i8 #0..#2 are these three; #3 is conv3's own.
+    for _ in range(2):
+        p = delete_config(p, "config_st_acc_i8(_) #1")
+    return p
 
 
 def sched_fc(cpu, in_ch, in_h, in_w, out_features, act=False):
@@ -445,10 +648,10 @@ def sched_resadd(cpu):
 
 conv1 = sched_conv(conv1_cpu, INPUT_DIM, 1, CONV1_FILTERS, 3)
 conv2 = sched_conv_fusion(
-    conv2_cpu, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 3
+    conv2_cpu, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 3, fused_out=True
 )
 conv3 = sched_conv_fusion(
-    conv3_cpu, CONV2_DIM, CONV2_FILTERS, CONV3_FILTERS, 3
+    conv3_cpu, CONV2_DIM, CONV2_FILTERS, CONV3_FILTERS, 3, fused_in=True
 )
 nlb_qkv_conv = sched_conv(nlb_qkv_conv_cpu, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 1)
 nlb_out_conv = sched_conv(nlb_out_conv_cpu, CONV1_DIM, CONV2_FILTERS, CONV1_FILTERS, 1)
@@ -490,6 +693,7 @@ def schedule_braggnn():
     gemmini = inline(gemmini, "conv2(_)")
     gemmini = inline(gemmini, "conv3(_)")
     gemmini = delete_config(gemmini, "config_matmul_trans_b(_) #1")
+    gemmini = fuse_conv2_conv3(gemmini)
     gemmini = call_eqv(gemmini, "fc1_cpu(_)", fc1)
     gemmini = call_eqv(gemmini, "fc2_cpu(_)", fc2)
     gemmini = call_eqv(gemmini, "fc3_cpu(_)", fc3)
