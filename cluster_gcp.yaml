@@ -1,0 +1,95 @@
+tailnet:
+    manage_all: false
+    auth_key: ${TS_AUTHKEY}      # reusable tailscale auth key
+    socks_proxy: 127.0.0.1:1155
+    head_tailnet_ip: ${CHIA_HEAD_IP}
+
+provider:
+    type: local
+    head_ip: ${CHIA_HEAD_IP}
+
+auth:
+    ssh_user: ${USER}
+    ssh_private_key: ${CHIA_HEAD_PRIVATE_KEY}
+    ssh_proxy_command: "socat - TCP:%h:%p"
+    overrides:
+        "${FIRESIM_IP}":
+            ssh_user: ${FIRESIM_USER}
+
+gcp_nodes:
+    project: ${GOOGLE_CLOUD_PROJECT}
+    zone: us-central1-b
+
+    gcp_worker:
+        machine_type: e2-standard-8
+        count: 2                      # 0 = exo_compiler, 1 = opencode(+evolver)
+        image: "projects/debian-cloud/global/images/family/debian-12"
+        ssh_user: ${USER}             # local user auto-created on the VM
+        ssh_private_key: ~/.ssh/id_ed25519
+        spot: false                   # set true if your project's quota allows it
+        disk_size_gb: 100
+        service_accounts:
+            - email: default
+              scopes:
+                  - https://www.googleapis.com/auth/cloud-platform
+
+available_node_types:
+    perflab_firesim:
+        resources: {"FPGA": 1, "manager": 1}
+        num_workers: 1
+        compatible_ips: ["${FIRESIM_IP}"]
+        worker_env_commands:
+              - "source ~/.bashrc && cd ~/chia-experiments/chipyard && source env.sh && source ~/.ssh/AGENT_VARS && cd ./sims/firesim && source ./sourceme-manager.sh --skip-ssh-setup && export RAY_DEFAULT_PYTHON_VERSION_MATCH_LEVEL=minor && export RAY_memory_monitor_refresh_ms=0"
+        worker_setup_commands:
+              - "python3 -m pip install --no-user \"ray[default]==2.54.0\" \"fastapi==0.121.0\" exo-lang openai pyyaml tqdm numpy python-dotenv google-auth requests"
+
+    exo_compiler:
+        resources: {"exo_build": 8}
+        num_workers: 1
+        compatible_ips: ["@gcp_worker:0"]
+        # Fresh VMs have no local images, so pull the public base image and
+        # install on top of it what dockerfiles/ExoDockerfile adds.
+        docker:
+            image: "ghcr.io/ucb-bar/chia-riscv-cross:v1.0.1"
+            container_name: "chia-exo"
+            pull_before_run: True
+            run_setup_commands:
+              - "pip install --no-cache-dir \"git+https://github.com/exo-lang/exo.git@defe17283d15553ca9d6ad70b2e9f4c22ff36ce2\""
+
+    opencode:
+        resources: {"opencode_creds": 1, "evolver": 1} # This node has both opencode and alphaevolve APIs
+        num_workers: 1
+        compatible_ips: ["@gcp_worker:1"]
+        # Same idea as dockerfiles/EvolverDockerfile (same base tag). The
+        # private ANL-TUT forks are fetched over SSH with the ssh-agent that
+        # `chia up` forwards (ssh -A): $SSH_AUTH_SOCK (no braces) is expanded
+        # on the VM, not here. Google credentials come from the VM's service
+        # account via the metadata server (--net=host), so no gcloud mount.
+        docker:
+            image: "ghcr.io/ucb-bar/chia-opencode:v1.0.1"
+            container_name: "chia-opencode"
+            pull_timeout: 7200
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+                - "-v $SSH_AUTH_SOCK:/ssh-agent"
+                - "-e SSH_AUTH_SOCK=/ssh-agent"
+                - "-e GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}"
+                - "-e GE_APP_ID=${GE_APP_ID}"
+                - "-e VERTEX_LOCATION=global"
+            run_setup_commands:
+              - "pip install \"ray[default]==2.54.0\""
+              - "mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts"
+              - "pip install --no-cache-dir \"importlib-metadata<8.8\" \"alpha-evolve @ git+https://github.com/Google-Cloud-AI/alphaevolve-on-googlecloud.git@b51ab7a6446d0168bf6db52c6dccbec414a21b3f\" \"evolve-flows @ git+ssh://git@github.com/ANL-TUT/evolve-flows.git@4f913a8453be130c7b00916a4d9129fd142e02ab\" \"skydiscover @ git+ssh://git@github.com/ANL-TUT/skydiscover.git@48690d9e0c850fc55f1cf95a6544f178adf3ddf7\""
+
+head_env_commands:
+    - "source ${CHIA_WORKSPACE_PATH}/.venv/bin/activate"
+
+head_start_ray_commands:
+    - "ray stop"
+    - "ray start --head --port=6379 --include-dashboard=True --dashboard-host=0.0.0.0 --dashboard-agent-listen-port=0"
+
+worker_start_ray_commands:
+    - "ray stop"
+    - "ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0"

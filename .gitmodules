@@ -1,0 +1,3 @@
+[submodule "chia"]
+	path = chia
+	url = https://github.com/ucb-bar/chia.git
