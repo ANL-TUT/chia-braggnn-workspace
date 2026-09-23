@@ -53,7 +53,7 @@ CHIPYARD_DIFF_SUBMODULES = [
 # the same path. Set CHIPYARD_PATH in .env; cluster.yaml uses it for that
 # mount too.
 # ---------------------------------------------------------------------------
-CHIPYARD_PATH = os.environ.get("CHIPYARD_PATH", "/nfs/app/chipyard")
+CHIPYARD_PATH = os.environ.get("CHIPYARD_PATH", "/home/ishibehouku/chia-experiments/chipyard")
 
 CHIPYARD_WRITABLE_DIRS = [
     f"{CHIPYARD_PATH}/generators/gemmini",
