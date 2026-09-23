@@ -81,7 +81,7 @@ FIRESIM_DEPLOY_DIR = f"{CHIPYARD_PATH}/sims/firesim/deploy"
 # at FIRESIM_HWDB_ENTRIES_DIR/FIRESIM_HWDB_ENTRY_NAME with the latest
 # bitstream_tar path. We give the copy appended to config_hwdb.yaml a
 # timestamped, unique key instead of reusing this name.
-FIRESIM_HWDB_ENTRY_NAME = "alveo_u250_firesim_gemmini_rocket_singlecore_no_nic"
+FIRESIM_HWDB_ENTRY_NAME = "alveo_u250_firesim_full_gemmini_rocket_singlecore_no_nic"
 FIRESIM_HWDB_ENTRIES_DIR = f"{FIRESIM_DEPLOY_DIR}/built-hwdb-entries"
 FIRESIM_CONFIG_HWDB_PATH = f"{FIRESIM_DEPLOY_DIR}/config_hwdb.yaml"
 FIRESIM_CONFIG_RUNTIME_PATH = f"{FIRESIM_DEPLOY_DIR}/config_runtime.yaml"
@@ -107,9 +107,14 @@ VLSI_TOP = "ChipTop"
 # sram-cache.json, which the container merges in when started with
 # WITH_OPENRAM=1 (cluster.yaml). See gemmini-sky130-sram22's
 # docs/openram-1r1w.md.
+# No retime-module.yml: retiming forces the flattened AccumulatorScale into
+# one serial Genus partition that takes hours (and grows with the datapath,
+# e.g. has_normalizations), so the loop synthesizes without it; expect
+# negative slack even on the unedited design.
+# See gemmini-sky130-sram22's README (env-setup) "Retiming (optional)".
 VLSI_INPUT_CONFS = [
     "example-tools.yml", "example-sky130.yml", "site-sky130.yml",
-    "openram-sky130.yml", "retime-module.yml",
+    "openram-sky130.yml",
 ]
 VLSI_OBJ_DIR_ROOT = f"{CHIPYARD_PATH}/vlsi/build-chia-ppa"
 VLSI_BUILDFILE_TIMEOUT_SECONDS = 1800

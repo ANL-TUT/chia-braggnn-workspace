@@ -23,9 +23,17 @@ def capture_chisel_baseline(
     return baseline
 
 
-def _untracked_diff(repo_path: str) -> str:
+# The root repo's own Chisel sources. Its other untracked files are build
+# output (vlsi/build-*, vlsi/generated-src-*: hundreds of MB of Verilog and
+# Genus DBs) or unrelated copies (e.g. generators/gemmini.bak), and the
+# generators/* submodules are diffed separately.
+ROOT_UNTRACKED_PATHSPECS = ["generators/chipyard"]
+
+
+def _untracked_diff(repo_path: str, pathspecs: list[str] | None = None) -> str:
     listed = subprocess.run(
-        ["git", "-C", repo_path, "ls-files", "--others", "--exclude-standard"],
+        ["git", "-C", repo_path, "ls-files", "--others", "--exclude-standard",
+         "--", *(pathspecs or [])],
         capture_output=True, text=True,
     ).stdout.split()
     parts = []
@@ -57,7 +65,7 @@ def collect_diff(
     if baseline.get(""):
         root_cmd.append(baseline[""])
     root = subprocess.run(root_cmd, capture_output=True, text=True).stdout
-    diffs[""] = root + _untracked_diff(chipyard_path)
+    diffs[""] = root + _untracked_diff(chipyard_path, ROOT_UNTRACKED_PATHSPECS)
     for sm in submodules:
         sm_path = os.path.join(chipyard_path, sm)
         sm_cmd = ["git", "-C", sm_path, "diff"]
