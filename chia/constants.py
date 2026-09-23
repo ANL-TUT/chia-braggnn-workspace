@@ -48,15 +48,17 @@ CHIPYARD_DIFF_SUBMODULES = [
 ]
 
 # ---------------------------------------------------------------------------
-# Chipyard checkout on the firesim node -- braggnn_loop.py edits Chisel and
-# builds there directly. Override with FIRESIM_CHIPYARD_PATH in .env.
+# Chipyard checkout (NFS), shared by the firesim node -- braggnn_loop.py edits
+# Chisel and builds there directly -- and the vlsi node, which mounts it at
+# the same path. Set CHIPYARD_PATH in .env; cluster.yaml uses it for that
+# mount too.
 # ---------------------------------------------------------------------------
-FIRESIM_CHIPYARD_PATH = os.environ.get("FIRESIM_CHIPYARD_PATH", "/nfs/app/chipyard")
+CHIPYARD_PATH = os.environ.get("CHIPYARD_PATH", "/nfs/app/chipyard")
 
 CHIPYARD_WRITABLE_DIRS = [
-    f"{FIRESIM_CHIPYARD_PATH}/generators/gemmini",
-    f"{FIRESIM_CHIPYARD_PATH}/sims/firesim",
-    f"{FIRESIM_CHIPYARD_PATH}/software/firemarshal",
+    f"{CHIPYARD_PATH}/generators/gemmini",
+    f"{CHIPYARD_PATH}/sims/firesim",
+    f"{CHIPYARD_PATH}/software/firemarshal",
 ]
 
 # ---------------------------------------------------------------------------
@@ -70,12 +72,12 @@ CHISEL_BUILD_MAKE_JOBS = 4
 # ---------------------------------------------------------------------------
 # Exo / BraggNN SW loop
 # ---------------------------------------------------------------------------
-GEMMINI_ROCC_TESTS_DIR = f"{FIRESIM_CHIPYARD_PATH}/generators/gemmini/software/gemmini-rocc-tests"
+GEMMINI_ROCC_TESTS_DIR = f"{CHIPYARD_PATH}/generators/gemmini/software/gemmini-rocc-tests"
 GEMMINI_PARAMS_H_PATH = f"{GEMMINI_ROCC_TESTS_DIR}/include/gemmini_params.h"
 
 # FireSim (bitstream registration / build; see firesim.py)
 # ---------------------------------------------------------------------------
-FIRESIM_DEPLOY_DIR = f"{FIRESIM_CHIPYARD_PATH}/sims/firesim/deploy"
+FIRESIM_DEPLOY_DIR = f"{CHIPYARD_PATH}/sims/firesim/deploy"
 
 # Name of the hwdb entry produced by config_build.yaml's build recipe --
 # fixed across builds, so each new buildbitstream overwrites the same file
@@ -112,7 +114,7 @@ VLSI_INPUT_CONFS = [
     "example-tools.yml", "example-sky130.yml", "site-sky130.yml",
     "openram-sky130.yml", "retime-module.yml",
 ]
-VLSI_OBJ_DIR_ROOT = f"{FIRESIM_CHIPYARD_PATH}/vlsi/build-chia-ppa"
+VLSI_OBJ_DIR_ROOT = f"{CHIPYARD_PATH}/vlsi/build-chia-ppa"
 VLSI_BUILDFILE_TIMEOUT_SECONDS = 1800
 # How long to wait for the vlsi worker's {"chipyard": 1} slot before giving
 # up on PPA for the attempt.

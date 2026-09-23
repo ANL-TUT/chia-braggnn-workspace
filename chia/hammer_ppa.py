@@ -10,7 +10,7 @@ from chia.base.ChiaFunction import chia_cancel, get
 from chia.chipyard.chipyard_hammer import ChipyardHammerNode
 
 from constants import (
-    BUILD_CONFIG, FIRESIM_CHIPYARD_PATH, VLSI_BUILDFILE_TIMEOUT_SECONDS,
+    BUILD_CONFIG, CHIPYARD_PATH, VLSI_BUILDFILE_TIMEOUT_SECONDS,
     VLSI_INPUT_CONFS, VLSI_OBJ_DIR_ROOT, VLSI_PG_READY_TIMEOUT_SECONDS,
     VLSI_SYN_TIMEOUT_SECONDS, VLSI_TOP,
 )
@@ -207,7 +207,7 @@ class PpaJob:
 
     def _make(self, target: str, timeout_seconds: int):
         return self._node.make.chia_remote(
-            FIRESIM_CHIPYARD_PATH, target, config=self.config, obj_dir=self.obj_dir,
+            CHIPYARD_PATH, target, config=self.config, obj_dir=self.obj_dir,
             make_vars=MAKE_VARS, timeout_seconds=timeout_seconds,
         )
 

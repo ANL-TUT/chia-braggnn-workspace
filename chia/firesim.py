@@ -21,10 +21,10 @@ from constants import (
     BUILD_CONFIG,
     BUILD_CONFIG_PACKAGE,
     CHIPYARD_DIFF_SUBMODULES,
+    CHIPYARD_PATH,
     CHISEL_BUILD_MAKE_JOBS,
     CHISEL_BUILD_TIMEOUT_SECONDS,
     FIRESIM_BUILD_TIMEOUT_SECONDS,
-    FIRESIM_CHIPYARD_PATH,
     FIRESIM_CONFIG_HWDB_PATH,
     FIRESIM_CONFIG_RUNTIME_PATH,
     FIRESIM_DEPLOY_DIR,
@@ -36,7 +36,7 @@ from dumper import Dumper
 
 logger = logging.getLogger(__name__)
 
-FIRESIM_DIR = f"{FIRESIM_CHIPYARD_PATH}/sims/firesim"
+FIRESIM_DIR = f"{CHIPYARD_PATH}/sims/firesim"
 HWDB = FIRESIM_CONFIG_HWDB_PATH
 BUILD_RECIPES = f"{FIRESIM_DEPLOY_DIR}/config_build_recipes.yaml"
 
@@ -202,7 +202,7 @@ def collect_chisel_diff(
     try:
         err, diffs = get(
             collect_diff.options(resources={"manager": 0.05}).chia_remote(
-                FIRESIM_CHIPYARD_PATH, CHIPYARD_DIFF_SUBMODULES, baseline
+                CHIPYARD_PATH, CHIPYARD_DIFF_SUBMODULES, baseline
             )
         )
     except Exception as e:  # noqa: BLE001 - diagnostic only
@@ -226,7 +226,7 @@ def collect_chisel_diff(
 
 def chisel_build(dump: Dumper, attempt: int):
     node = ChiselBuildNode(
-        chipyard_path=FIRESIM_CHIPYARD_PATH,
+        chipyard_path=CHIPYARD_PATH,
         config=BUILD_CONFIG,
         config_package=BUILD_CONFIG_PACKAGE,
         target=BuildTarget.VERILATOR,

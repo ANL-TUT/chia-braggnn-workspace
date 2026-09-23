@@ -32,9 +32,9 @@ from chipyard_ops import capture_chisel_baseline
 from constants import (
     BUILD_CONFIG,
     CHIPYARD_DIFF_SUBMODULES,
+    CHIPYARD_PATH,
     CHIPYARD_WRITABLE_DIRS,
     DEFAULT_OUTPUT_BASE,
-    FIRESIM_CHIPYARD_PATH,
     MAX_ATTEMPTS,
 )
 from dumper import Dumper, dump_llm
@@ -136,14 +136,14 @@ def _run_hw_flow(
 
     baseline = get(
         capture_chisel_baseline.options(resources={"manager": 0.01}).chia_remote(
-            FIRESIM_CHIPYARD_PATH, CHIPYARD_DIFF_SUBMODULES
+            CHIPYARD_PATH, CHIPYARD_DIFF_SUBMODULES
         )
     )
 
     def _new_chipyard_bash() -> SandboxedBashTool:
         return SandboxedBashTool(
             name="chipyard_bash",
-            work_dir=FIRESIM_CHIPYARD_PATH,
+            work_dir=CHIPYARD_PATH,
             writable_dirs=CHIPYARD_WRITABLE_DIRS,
             timeout_seconds=300,
             task_options={"resources": {"manager": 1}},
