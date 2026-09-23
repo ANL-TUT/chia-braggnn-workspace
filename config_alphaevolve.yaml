@@ -3,7 +3,7 @@
 #
 # Usage:  python chia/braggnn_alphaevolve_loop.py --config config_alphaevolve.yaml
 
-max_iterations: 10        # SW search budget (maps to max_programs_evaluated in the backend)
+max_iterations: 100        # SW search budget (maps to max_programs_evaluated in the backend)
 log_level: "INFO"
 file_suffix: ".py"
 
@@ -219,6 +219,24 @@ alphaevolve:
     - To place intermediate buffers in another memory, use cursors, not the
       IR: `p = set_memory(p, p.find_alloc_or_arg("fc1_out"), DRAM_STATIC)`,
       repeated per buffer name.
+    - Unroll only loops you have named, never by trial and error. In the
+      last search every one of the 20 candidates that failed to build looped
+      over a list of loop names calling `unroll_loop` inside try/except "until
+      it fails"; 5 of them also walked `proc._loopir_proc` to list the loops
+      and were rejected before building. `braggnn_eval` has dozens of
+      weight-staging loops before the patch loop, all named `i0`..`i3` with
+      bounds up to 64: `find_loop("i0")` / `unroll_loop(p, "i1")` hits those,
+      unrolls thousands of iterations, and `exocc` dies with "RecursionError:
+      maximum recursion depth exceeded". The CPU work inside `for p` is
+      `irow`/`icol` (11x11 copy of the input patch), `h`/`w` (11x11 input
+      quantization), `ch`/`r`/`c` (8x5x5 NCHW flatten) and `k` (the 2
+      outputs); those names are unique, so target them directly. Keep a full
+      unroll to about 128 iterations or fewer; for a larger nest `divide_loop`
+      first and unroll the inner loop.
+    - To inspect the loops, use cursors, never the IR: `p.find("for _ in _:
+      _", many=True)`, or walk `p.body()` and each loop's `.body()`, checking
+      `isinstance(s, ForCursor)` (`from exo.API_cursors import ForCursor`) and
+      reading `s.name()`. Printing `p` also shows every loop name.
     - Change one thing at a time and build on the best candidate so far. A
       candidate that fails in one place is worth nothing, so prefer small,
       certain edits over large rewrites.
@@ -245,13 +263,40 @@ alphaevolve:
       statements match the instruction's semantics. Every read and write of a
       `GEMM_SCRATCH` buffer has to come from an instr: Exo refuses scalar
       access to it.
-    - Fences: `insert_noop_call(..., fence, [])` serializes the accelerator;
-      remove or move any that are not needed for correctness.
+    - Fences: see the Fences section below. Merging fences between ops that
+      do not depend on each other can save cycles; removing the fence between
+      an op and the op that reads its output breaks the result.
     - Tile sizes (for example `NLB_ROW_TILE`). This mostly changes how many
       hardware-loop launches are issued, so it may change cycles very little,
       and several tilings can produce identical generated C.
     A candidate whose generated C equals an earlier one teaches nothing, so vary
     something that changes the generated code.
+
+    ## Fences
+
+    `fence` (`insert_noop_call(..., fence, [])`, C `gemmini_fence()`) makes the
+    CPU wait until every Gemmini command issued so far has finished. Exo
+    treats it as a no-op, so adding or removing one never fails an
+    equivalence check -- whether the result is still correct is up to you.
+    Gemmini runs its commands asynchronously from the CPU, and a hardware loop
+    writes its output to DRAM with stores that may still be in flight when the
+    next command or the next CPU statement starts; Gemmini does not order a
+    later loop's DRAM loads after an earlier loop's DRAM stores. So:
+    - A fence is required between an op that writes a buffer and anything
+      after it that reads that buffer (another Gemmini op or CPU code), and
+      between an op that is still reading a buffer and anything after it that
+      overwrites it.
+    - The last Gemmini op of a patch must be fenced before the closing
+      `rdcycle`, or the measured cycles leave out work still running.
+    - Ops that do not read or write each other's buffers may share one fence
+      after the last of them, e.g. the three `nlb_qkv_conv` calls (same input,
+      three separate outputs) or the pieces of one loop split by
+      `NLB_ROW_TILE` (disjoint rows). This is where fence savings are real.
+    Measured: candidates that dropped the fences between dependent layers ran
+    at 39.1k-39.3k cycles but predicted wrong values and scored nothing, while
+    the best correct candidate so far runs at 41.5k. If a candidate fails the
+    accuracy gate, look first for a missing fence between a producer and its
+    consumer.
 
     ## Known hardware quirk
 

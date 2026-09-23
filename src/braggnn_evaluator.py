@@ -52,6 +52,23 @@ _ERROR_RE = re.compile(r"Avg error:\s*\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)")
 MEASUREMENTS_FILE = "measurements.jsonl"
 
 
+FAILURE_TEXT_CHARS = 4000
+
+
+def _failure_text(artifacts: dict) -> Optional[str]:
+    """The tail of whatever explains a failed evaluation, or None."""
+    if not artifacts.get("failure_stage"):
+        return None
+    text = (
+        artifacts.get("detail")
+        or artifacts.get("stderr")
+        or artifacts.get("uartlog")
+        or artifacts.get("stdout")
+        or ""
+    )
+    return text[-FAILURE_TEXT_CHARS:] or None
+
+
 def source_sha256(program_solution: str) -> str:
     return hashlib.sha256(program_solution.strip().encode()).hexdigest()
 
@@ -134,6 +151,10 @@ class BraggnnEvaluator(ChiaEvaluator):
             "cycles": artifacts.get("cycles"),
             "subpixel_error": artifacts.get("subpixel_error"),
             "failure_stage": artifacts.get("failure_stage"),
+            # Why it failed (build log / accuracy detail / run stderr), so the
+            # driver's live progress shows reasons, not just the stage.
+            "build_stage": artifacts.get("build_stage"),
+            "error": _failure_text(artifacts),
         }
         os.makedirs(self.output_dir, exist_ok=True)
         with open(os.path.join(self.output_dir, MEASUREMENTS_FILE), "a") as f:

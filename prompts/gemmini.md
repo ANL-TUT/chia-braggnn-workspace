@@ -143,6 +143,24 @@ dataflow, queue depths and DMA parameters are all fair game. Note that
 `ext_mem` is `None` unless `use_shared_ext_mem` is set. Fix that call as
 part of the same edit if you want a single-ported accumulator.
 
+**Where to start.** Expect performance to come from two things: keeping
+the PEs busy through tiling, and cutting stalls on the scratchpad /
+accumulator SRAMs. The array works on 16x16 tiles, but BraggNN's feature
+maps are 11, 9, 7, ... wide, so no tiling of those sizes avoids partial
+tiles: part of the array idles on every one of them, however well the SW
+search tiles. Because `DIM` must stay 16 (see the hard constraint above),
+you cannot resize the array to fit those sizes. Consider these first,
+before the other parameters:
+- **Scratchpad / accumulator banking** (`sp_banks`, `acc_banks`, with
+  `sp_capacity` / `acc_capacity`): more banks let mvin, compute and mvout
+  hit different banks instead of stalling on each other, and more capacity
+  keeps more of each layer resident. The "compute stall waiting on spad /
+  acc" counters in Current Results below show how much time goes there.
+- **How the 16-wide array is built** (`meshRows` x `tileRows`,
+  `meshColumns` x `tileColumns`, keeping each product at 16): this changes
+  the array's pipelining and latency, not its width, so it can help the
+  short, partial-tile operations these small layers produce.
+
 Leave `gemmini.h` / `gemmini_nn.h`'s internal tiling/blocking/scheduling
 logic alone otherwise, per the Co-Design Loop section above -- that is the
 automated SW search's job, re-run fresh after every hardware change you

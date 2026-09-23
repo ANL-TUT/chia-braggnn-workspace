@@ -261,10 +261,12 @@ def run_alphaevolve_search(
 class _LiveProgress:
     """Mirrors the search onto the driver while it runs, into
     <out_dir>/attempt<N>_live/: candidates/, measurements.jsonl, progress.txt
-    (one line per measured candidate) and, whenever a candidate beats the
-    previous best, best_braggnn_schedule.py + best.json. The files exist only
-    in the evolver container until copied here, so this is what is left if the
-    job is stopped before the search ends."""
+    (one line per measured candidate, with the reason for a failure),
+    failures/<candidate>.txt (the build log / accuracy detail of each failed
+    one) and, whenever a candidate beats the previous best,
+    best_braggnn_schedule.py + best.json. The files exist only in the evolver
+    container until copied here, so this is what is left if the job is
+    stopped before the search ends."""
 
     def __init__(self, out_dir: Path, attempt: int, eval_dir: str):
         self.dir = Path(out_dir) / f"attempt{attempt}_live"
@@ -312,6 +314,12 @@ class _LiveProgress:
                     f"score={record.get('combined_score', 0.0):.4f}"
                     + (" (new best)" if improved else "")
                 )
+                if record.get("error"):
+                    failures = self.dir / "failures"
+                    failures.mkdir(exist_ok=True)
+                    (failures / f"{Path(name).stem}.txt").write_text(
+                        record["error"], errors="replace")
+                    entry += f" -- {_error_summary(record['error'])}"
                 progress.write(entry + "\n")
                 logger.info("Candidate %s", entry)
                 if improved and source is not None:
@@ -319,6 +327,18 @@ class _LiveProgress:
                     (self.dir / "best_braggnn_schedule.py").write_text(source)
                     (self.dir / "best.json").write_text(json.dumps(self.best, indent=2))
         self.n_measured = len(lines)
+
+
+def _error_summary(text: str, limit: int = 200) -> str:
+    """One line from a failure text: the last exception / error line if there
+    is one (a Python traceback or compiler output ends with it), else the
+    first line (the accuracy gate's detail)."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    errors = [line for line in lines if "Error" in line or "error:" in line]
+    line = errors[-1] if errors else lines[0]
+    return line if len(line) <= limit else line[: limit - 3] + "..."
 
 
 def _attach_measurement(result, measurements: str) -> None:
