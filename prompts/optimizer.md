@@ -3,7 +3,7 @@ real FPGA hardware via FireSim, with the results below. These numbers are
 your previous hardware paired with the best schedule the automated SW
 search (Exo + AlphaEvolve) could find for it, not a fixed kernel -- read
 them as feedback on the hardware, per the Co-Design Loop section of your
-instructions. A Hammer PPA (Genus synthesis, sky130+SRAM22) area/timing
+instructions. A Hammer PPA (Genus synthesis, sky130 + SRAM macros) area/slack/power
 report for the same hardware may also be included below; when present,
 treat it as a secondary objective alongside cycles/accuracy -- do not trade
 away correctness or a large amount of cycles for a small area win, and

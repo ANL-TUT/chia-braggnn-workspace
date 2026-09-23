@@ -59,7 +59,7 @@ def source_sha256(program_solution: str) -> str:
 _FORBIDDEN_EXO = re.compile(r"\bunsafe_[A-Za-z_]+|\b_loopir_proc\b|\bLoopIR\b")
 
 
-def build_braggnn_binary(program_solution: str) -> Any:
+def build_braggnn_binary(program_solution: str, gemmini_params_h: Optional[str] = None) -> Any:
     banned = _FORBIDDEN_EXO.search(program_solution)
     if banned:
         return ray.put(BraggnnBuildResult(
@@ -70,7 +70,7 @@ def build_braggnn_binary(program_solution: str) -> Any:
                 "construction are not allowed)"
             ),
         ))
-    build = get(build_candidate_elf.chia_remote(program_solution))
+    build = get(build_candidate_elf.chia_remote(program_solution, gemmini_params_h))
     return ray.put(BraggnnBuildResult(
         success=build["elf"] is not None,
         binary=build["elf"] or b"",
@@ -85,9 +85,13 @@ class BraggnnEvaluator(ChiaEvaluator):
         firesim_ready: ObjectRef,
         output_dir: str,
         fake_run: bool = False,
+        gemmini_params_h: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         self._firesim_ready = firesim_ready
+        # This attempt's elaborated gemmini_params.h for every candidate build
+        # (None = the header shipped in exo/include).
+        self._gemmini_params_h = gemmini_params_h
         # --sw-only test runs: no FireSim node, so "run" = the ELF's size in bytes.
         self._fake_run = fake_run
         # itertools.count().next() is a single GIL-protected C call, so it's
@@ -138,7 +142,7 @@ class BraggnnEvaluator(ChiaEvaluator):
     def _build(self, program_solution: str) -> Any:
         idx = next(self._candidate_counter)
         self._save_candidate_source(program_solution, idx)
-        return build_braggnn_binary(program_solution)
+        return build_braggnn_binary(program_solution, self._gemmini_params_h)
 
     def _save_candidate_source(self, program_solution: str, idx: int) -> None:
         """Persist every candidate AlphaEvolve generates (not just the best

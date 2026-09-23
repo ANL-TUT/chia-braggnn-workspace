@@ -22,6 +22,13 @@ class Dumper:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         return self.out_dir / f"{ts}_{name}"
 
+    def dir(self, name: str) -> Path:
+        """Create (and return) a timestamped subdirectory for a group of
+        files that should stay together, e.g. a mirrored report tree."""
+        path = self._path(name)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def text(self, name: str, content: str) -> None:
         with open(self._path(name), "w", errors="replace") as f:
             f.write(content or "")

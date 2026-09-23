@@ -6,8 +6,9 @@ co-design implementation is kept in this module but is not called by the CLI.
 
 The retained co-design implementation has two halves per attempt:
   1. HW: OpenCode (Gemini on Vertex AI) edits the Gemmini Chisel sources on the
-     FireSim node, then the design is built (Verilator) and a FireSim bitstream
-     build is started in the background.
+     FireSim node, then the design is elaborated by Hammer's buildfile (the
+     build check), and the FireSim bitstream build and Genus synthesis
+     (PPA) are started in the background.
   2. SW: AlphaEvolve searches over the Exo schedule (exo/braggnn_schedule.py) for
      that hardware. Each candidate is compiled with Exo in the exo container and
      run on FireSim; the score is the average cycles per patch.
@@ -29,6 +30,7 @@ from chia.base.ChiaFunction import get
 from alphaevolve_flow import DEFAULT_CONFIG, SEED_PROGRAM, run_alphaevolve_search
 from chipyard_ops import capture_chisel_baseline
 from constants import (
+    BUILD_CONFIG,
     CHIPYARD_DIFF_SUBMODULES,
     CHIPYARD_WRITABLE_DIRS,
     DEFAULT_OUTPUT_BASE,
@@ -38,13 +40,13 @@ from constants import (
 from dumper import Dumper, dump_llm
 from firesim import (
     SandboxedBashTool,
-    chisel_build,
-    chisel_build_mock,
     collect_chisel_diff,
     firesim_buildbitstream_mock,
+    read_gemmini_params_h,
     start_bitstream_build,
 )
-from hammer_ppa import run_ppa_synthesis
+from exo_compiler import check_exo_compatible
+from hammer_ppa import PPA_FLOW_LABEL, PpaJob
 from llm import debug, implement, make_llm, optimize
 
 logger = logging.getLogger(__name__)
@@ -113,7 +115,6 @@ def _run_hw_flow(
     output_dir: Optional[str] = None,
     iterations: int = MAX_ATTEMPTS,
     config_path: str = DEFAULT_CONFIG,
-    mock_chisel_build: bool = False,
     mock_bitstream: bool = False,
     sw_only: bool = False,
 ):
@@ -176,20 +177,6 @@ def _run_hw_flow(
         chipyard_bash.stop()
 
         diffs = collect_chisel_diff(dump, attempt, baseline)
-        build = chisel_build_mock if mock_chisel_build else chisel_build
-        artifact = build(dump, attempt)
-
-        if not artifact.success:
-            logger.error("Build failure (attempt %d)", attempt + 1)
-            feedback = (
-                f"chisel_build failed (attempt {attempt + 1}):\n\n"
-                f"STDOUT:\n{_tail(artifact.stdout)}\n\nSTDERR:\n{_tail(artifact.stderr)}"
-            )
-            feedback_kind = "failure"
-            if attempt + 1 < iterations:
-                chipyard_bash = _new_chipyard_bash()
-            continue
-
         if diffs is None:
             logger.error(
                 "collect_chisel_diff failed (attempt %d), skipping "
@@ -204,16 +191,70 @@ def _run_hw_flow(
                 chipyard_bash = _new_chipyard_bash()
             continue
 
+        # Hammer's buildfile elaborates the design, so it doubles as the
+        # check that the Chisel edit builds. It runs before the bitstream
+        # build: both run sbt in the same chipyard checkout.
+        ppa_job = PpaJob(dump, attempt)
+        elab = ppa_job.elaborate()
+        if elab is not None and not elab.success:
+            logger.error("Elaboration failure (attempt %d)", attempt + 1)
+            feedback = (
+                f"Hammer buildfile (elaboration of {BUILD_CONFIG}) failed "
+                f"(attempt {attempt + 1}):\n\n"
+                f"STDOUT:\n{_tail(elab.stdout)}\n\nSTDERR:\n{_tail(elab.stderr)}"
+            )
+            feedback_kind = "failure"
+            if attempt + 1 < iterations:
+                chipyard_bash = _new_chipyard_bash()
+            continue
+
+        # Elaboration regenerates gemmini_params.h from the edited Configs.scala;
+        # read it now, before the bitstream build elaborates again, and build
+        # every AlphaEvolve candidate against it.
+        if elab is None:
+            logger.warning(
+                "No elaboration this attempt (vlsi worker unavailable); "
+                "gemmini_params.h may not reflect the Chisel edit",
+            )
+        params_h = get(
+            read_gemmini_params_h.options(resources={"manager": 0.05}).chia_remote()
+        )
+        dump.text(f"gemmini_params_attempt{attempt}.h", params_h)
+        unsupported = check_exo_compatible(params_h)
+        if unsupported:
+            logger.error("Hardware not targetable by Exo (attempt %d): %s",
+                         attempt + 1, unsupported)
+            ppa_job.cancel()
+            feedback = (
+                f"Attempt {attempt + 1}'s hardware cannot be programmed by the "
+                "Exo SW search, so it was not built or measured. The "
+                f"gemmini_params.h generated from your Configs.scala has: "
+                f"{unsupported}. Keep the mesh 16 wide (meshRows * tileRows == "
+                "meshColumns * tileColumns == 16) with int8 inputs/weights and "
+                "int32 accumulators."
+            )
+            feedback_kind = "failure"
+            if attempt + 1 < iterations:
+                chipyard_bash = _new_chipyard_bash()
+            continue
+
         if mock_bitstream:
             bitstream_ref = firesim_buildbitstream_mock.chia_remote()
         else:
             bitstream_ref = start_bitstream_build()
+        # Genus synthesis overlaps the bitstream build and the SW search.
+        ppa_job.start_syn()
 
-        run = run_alphaevolve_search(
-            dump, attempt, exo_seed, bitstream_ref,
-            config_path=config_path, eval_dir=_eval_dir(output_dir),
-            hw_change_summary=_tail(impl.result),
-        )
+        try:
+            run = run_alphaevolve_search(
+                dump, attempt, exo_seed, bitstream_ref,
+                config_path=config_path, eval_dir=_eval_dir(output_dir),
+                hw_change_summary=_tail(impl.result),
+                hw_context=params_h, gemmini_params_h=params_h,
+            )
+        except BaseException:
+            ppa_job.cancel()
+            raise
 
         if (
             run.terminal_status != "error"
@@ -237,22 +278,22 @@ def _run_hw_flow(
                 "continuing to refine the design",
                 attempt + 1, cycles, subpixel_error,
             )
-            # Best-effort PPA (Genus synthesis, sky130+SRAM22) on this
-            # attempt's hardware, now that it has a validated FireSim result.
-            # Never blocks/fails the loop; see hammer_ppa.run_ppa_synthesis.
-            ppa = run_ppa_synthesis(dump, attempt)
+            # Best-effort PPA (Genus synthesis, sky130 + SRAM macros) on this
+            # attempt's hardware: wait for the background syn so its numbers
+            # go into this feedback. Never fails the loop; see hammer_ppa.PpaJob.
+            ppa = ppa_job.result()
             logger.info(
                 "Hammer PPA (attempt %d): %s", attempt + 1,
                 "OK" if ppa.success else f"FAILED at {ppa.stage}",
             )
-            if ppa.success and ppa.final_area_rpt:
+            if ppa.success:
                 ppa_note = (
-                    "\n\nHammer PPA (Genus synthesis, sky130+SRAM22) for this "
-                    f"attempt's hardware:\n{_tail(ppa.final_area_rpt)}"
+                    f"\n\nHammer PPA (Genus synthesis, {PPA_FLOW_LABEL}) for this "
+                    f"attempt's hardware:\n{ppa.summary()}"
                 )
             else:
                 ppa_note = (
-                    f"\n\nHammer PPA (Genus synthesis, sky130+SRAM22) FAILED at "
+                    f"\n\nHammer PPA (Genus synthesis, {PPA_FLOW_LABEL}) FAILED at "
                     f"{ppa.stage} for this attempt's hardware; area/timing not "
                     "available this round."
                 )
@@ -268,6 +309,7 @@ def _run_hw_flow(
             continue
 
         logger.error("AlphaEvolve search failure (attempt %d)", attempt + 1)
+        ppa_job.cancel()  # no validated result, so this hardware's PPA is moot
         feedback = (
             f"alphaevolve search failed (attempt {attempt + 1}): no candidate "
             f"was successfully evaluated (iterations={run.iteration_count}, "

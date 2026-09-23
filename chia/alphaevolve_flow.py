@@ -80,6 +80,7 @@ def run_alphaevolve_search(
     hw_change_summary: str = "",
     hw_context: Optional[str] = None,
     fake_run: bool = False,
+    gemmini_params_h: Optional[str] = None,
 ):
     # *eval_dir* is resolved in the evolver container, where the evaluator runs;
     # the driver's own artifacts go through *dump* instead.
@@ -109,6 +110,7 @@ def run_alphaevolve_search(
         firesim_ready=firesim_ready,
         output_dir=eval_dir,
         fake_run=fake_run,
+        gemmini_params_h=gemmini_params_h,
         timeout=3600.0,
         max_retries=1,
     )

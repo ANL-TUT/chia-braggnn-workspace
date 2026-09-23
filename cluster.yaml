@@ -63,6 +63,10 @@ available_node_types:
           - "-e INNOVUS_BIN=${INNOVUS_BIN}"
           - "-e CADENCE_SETUP=${CADENCE_SETUP}"
           - "-e CDS_SKIP_OS_CHECK=1"
+          # Merge the OpenRAM 1rw1r entries into the mounted chipyard's Hammer
+          # sram-cache.json (once; a no-op when already there) so dual-port
+          # memories can be mapped. See VLSI_INPUT_CONFS in chia/constants.py.
+          - "-e WITH_OPENRAM=1"
 
 
 head_env_commands:
