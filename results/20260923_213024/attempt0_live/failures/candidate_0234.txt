@@ -1,0 +1,79 @@
+gemmini_extended_config_ex(WEIGHT_STATIONARY, (0), 0, 1, (0), (0));
+    #        gemmini_extended_config_st((32), NO_ACTIVATION, {scale}[0]);
+    #        gemmini_extended3_config_ld((81), 1.0f, false, (0));
+    #        gemmini_extended3_config_ld((32), 1.0f, false, (1));
+    #        gemmini_extended3_config_ld((32), 1.0f, false, (2));
+    #        gemmini_loop_ws(6, 2, 6, 15, 0, 15, {A}, {B}, 0, {C}, 81, 32, 32, 32, 0, 0, 0, 0, 0, NO_ACTIVATION, 1, 1, 0);
+    for i1 in seq(0, 9):
+        for i2 in seq(0, 9):
+            for j in seq(0, 32):
+                res: i32 @ DRAM
+                res = 0
+                for k1 in seq(0, 9):
+                    for k2 in seq(0, 9):
+                        a: i8 @ DRAM
+                        a = A[i1, i2, k1, k2]
+                        b: i8 @ DRAM
+                        b = B[k1, k2, j]
+                        a2: i32 @ DRAM
+                        b2: i32 @ DRAM
+                        a2 = a
+                        b2 = b
+                        res += a2 * b2
+                src_tmp: i32 @ DRAM
+                src_tmp = res
+                tmp_res1: f32 @ DRAM
+                acc_scale(src_tmp, tmp_res1, scale)
+                tmp_res2: i8 @ DRAM
+                clamp(tmp_res1, tmp_res2)
+                C[i1, i2, j] = tmp_res2
+Statements:
+for i1_i in seq(0, 8):
+    for i2 in seq(0, 9):
+        for j in seq(0, 32):
+            res: i32 @ DRAM
+            res = 0
+            for k1 in seq(0, 9):
+                for k2 in seq(0, 9):
+                    a: i8 @ DRAM
+                    a = A[i1_i + 8 * i1_o, i2, k1, k2]
+                    b: i8 @ DRAM
+                    b = B[k1, k2, j]
+                    a2: i32 @ DRAM
+                    b2: i32 @ DRAM
+                    a2 = a
+                    b2 = b
+                    res += a2 * b2
+            src_tmp: i32 @ DRAM
+            src_tmp = res
+            tmp_res1: f32 @ DRAM
+            acc_scale(src_tmp, tmp_res1, scale)
+            tmp_res2: i8 @ DRAM
+            clamp(tmp_res1, tmp_res2)
+            C[i1_i + 8 * i1_o, i2, j] = tmp_res2
+Traceback (most recent call last):
+  File "/home/ray/anaconda3/bin/exocc", line 8, in <module>
+    sys.exit(main())
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 140, in main
+    exocc(*sys.argv[1:], name=Path(sys.argv[0]).name)
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 84, in exocc
+    library = [
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 87, in <listcomp>
+    for proc in get_procs_from_module(load_user_code(mod))
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 135, in load_user_code
+    spec.loader.exec_module(user_module)
+  File "<frozen importlib._bootstrap_external>", line 883, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "/tmp/chia-braggnn-candidate-_1qn_qj2/braggnn_schedule.py", line 158, in <module>
+    matmul_attention_g = sched_matmul(matmul_attention_g_cpu)
+  File "/tmp/chia-braggnn-candidate-_1qn_qj2/braggnn_schedule.py", line 125, in sched_matmul
+    gemmini = replace(gemmini, "for i1_i in _:_", do_matmul)
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/API_scheduling.py", line 100, in __call__
+    return self.func(*bound_args.args, **bound_args.kwargs)
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/API_scheduling.py", line 1092, in replace
+    ir, fwd = DoReplace(subproc._loopir_proc, block_cursor._impl)
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/rewrite/LoopIR_unification.py", line 90, in DoReplace
+    new_args = Unification(temp_subproc, stmts, live_vars).result()
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/rewrite/LoopIR_unification.py", line 685, in __init__
+    raise UnificationError(f"Unification of various index expressions failed")
+exo.rewrite.LoopIR_unification.UnificationError: Unification of various index expressions failed

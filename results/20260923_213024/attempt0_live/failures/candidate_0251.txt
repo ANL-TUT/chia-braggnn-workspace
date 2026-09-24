@@ -1,0 +1,31 @@
+Traceback (most recent call last):
+  File "/home/ray/anaconda3/bin/exocc", line 8, in <module>
+    sys.exit(main())
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 140, in main
+    exocc(*sys.argv[1:], name=Path(sys.argv[0]).name)
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 84, in exocc
+    library = [
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 87, in <listcomp>
+    for proc in get_procs_from_module(load_user_code(mod))
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 135, in load_user_code
+    spec.loader.exec_module(user_module)
+  File "<frozen importlib._bootstrap_external>", line 883, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "/tmp/chia-braggnn-candidate-68tlnuu2/braggnn_schedule.py", line 225, in <module>
+    braggnn_eval = schedule_eval()
+  File "/tmp/chia-braggnn-candidate-68tlnuu2/braggnn_schedule.py", line 207, in schedule_eval
+    gemmini = fuse(gemmini, "for irow in _:_ #0", "for h in _:_ #0")
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/API_scheduling.py", line 100, in __call__
+    return self.func(*bound_args.args, **bound_args.kwargs)
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/API_scheduling.py", line 2151, in fuse
+    ir, fwd = scheduling.DoFuseLoop(s1, s2, unsafe_disable_check)
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/rewrite/LoopIR_scheduling.py", line 2630, in DoFuseLoop
+    raise SchedulingError(
+exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+begin: i32 @ DRAM
+, not the provided second loop:
+ for h in seq(0, 11):
+    for w in seq(0, 11):
+        q: f32 @ DRAM
+        q = fp32_patch[h, w] * 127.0
+        inp[h, w, 0] = q

@@ -1,0 +1,145 @@
+from __future__ import annotations
+
+from braggnn_reference import (
+    CONV1_DIM,
+    CONV1_FILTERS,
+    CONV2_DIM,
+    CONV2_FILTERS,
+    CONV3_DIM,
+    CONV3_FILTERS,
+    FC1_UNITS,
+    FC2_UNITS,
+    FC3_UNITS,
+    FC4_UNITS,
+    INPUT_DIM,
+    OUTPUT_UNITS,
+    SOFTMAX_MAX_SHIFT,
+    braggnn_eval_cpu,
+    braggnn_inference_cpu,
+    conv1_cpu,
+    conv2_cpu,
+    conv3_cpu,
+    fc1_cpu,
+    fc2_cpu,
+    fc3_cpu,
+    fc4_cpu,
+    fc_output_cpu,
+    matmul_attention_g_cpu,
+    matmul_theta_phi_cpu,
+    nlb_cpu,
+    nlb_out_conv_cpu,
+    nlb_qkv_conv_cpu,
+    nlb_softmax_cpu,
+    resadd_relu_cpu,
+)
+from exo.API_scheduling import (
+    call_eqv,
+    divide_loop,
+    inline,
+    insert_noop_call,
+    rename,
+    replace,
+    simplify,
+)
+from gemmini import (
+    fence,
+    make_loop_conv_ws,
+    make_loop_matmul,
+    make_loop_matmul_fc,
+    make_loop_matmul_trans_b,
+    make_loop_resadd,
+    make_loop_softmax,
+)
+
+# EVOLVE-BLOCK-START
+from exo.API_scheduling import unroll_loop
+
+
+def fence_after(p, pattern):
+    return insert_noop_call(p, p.find(pattern).after(), fence, [])
+
+
+def sched_op(cpu, make_loop_fn, loop_pattern, *args, fence=True, **kwargs):
+    name = cpu.name()[: -len("_cpu")]
+    do_op = make_loop_fn(f"do_{name}", *args, **kwargs)
+    gemmini = rename(cpu, name)
+    gemmini = replace(gemmini, loop_pattern, do_op)
+    if fence:
+        gemmini = fence_after(gemmini, f"do_{name}(_)")
+    return gemmini
+
+
+conv1 = sched_op(conv1_cpu, make_loop_conv_ws, "for orow in _:_", INPUT_DIM, 1, CONV1_FILTERS, 3)
+conv2 = sched_op(conv2_cpu, make_loop_conv_ws, "for orow in _:_", CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 3, act=True)
+conv3 = sched_op(conv3_cpu, make_loop_conv_ws, "for orow in _:_", CONV2_DIM, CONV2_FILTERS, CONV3_FILTERS, 3, act=True)
+nlb_qkv_conv = sched_op(nlb_qkv_conv_cpu, make_loop_conv_ws, "for orow in _:_", CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 1, fence=False)
+nlb_out_conv = sched_op(nlb_out_conv_cpu, make_loop_conv_ws, "for orow in _:_", CONV1_DIM, CONV2_FILTERS, CONV1_FILTERS, 1)
+
+fc1 = sched_op(fc1_cpu, make_loop_matmul_fc, "for j in _:_", CONV3_FILTERS, CONV3_DIM, CONV3_DIM, FC1_UNITS, act=True)
+fc2 = sched_op(fc2_cpu, make_loop_matmul_fc, "for j in _:_", FC1_UNITS, 1, 1, FC2_UNITS, act=True)
+fc3 = sched_op(fc3_cpu, make_loop_matmul_fc, "for j in _:_", FC2_UNITS, 1, 1, FC3_UNITS, act=True)
+fc4 = sched_op(fc4_cpu, make_loop_matmul_fc, "for j in _:_", FC3_UNITS, 1, 1, FC4_UNITS, act=True)
+fc_output = sched_op(fc_output_cpu, make_loop_matmul_fc, "for j in _:_", FC4_UNITS, 1, 1, OUTPUT_UNITS)
+
+matmul_theta_phi = sched_op(matmul_theta_phi_cpu, make_loop_matmul_trans_b, "for i1 in _:_", CONV2_FILTERS, CONV1_DIM)
+nlb_softmax = sched_op(nlb_softmax_cpu, make_loop_softmax, "for i1 in _:_", CONV1_DIM, SOFTMAX_MAX_SHIFT)
+matmul_attention_g = sched_op(matmul_attention_g_cpu, make_loop_matmul, "for i1 in _:_", CONV2_FILTERS, CONV1_DIM)
+resadd_relu = sched_op(resadd_relu_cpu, make_loop_resadd, "for i1 in _:_", CONV1_DIM, CONV1_FILTERS)
+
+
+def schedule_nlb():
+    gemmini = rename(nlb_cpu, "nlb")
+    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
+    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
+    gemmini = fence_after(gemmini, "nlb_qkv_conv(_) #1")
+    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
+    gemmini = call_eqv(gemmini, "matmul_theta_phi_cpu(_)", matmul_theta_phi)
+    gemmini = call_eqv(gemmini, "nlb_softmax_cpu(_)", nlb_softmax)
+    gemmini = call_eqv(gemmini, "matmul_attention_g_cpu(_)", matmul_attention_g)
+    gemmini = call_eqv(gemmini, "nlb_out_conv_cpu(_)", nlb_out_conv)
+    gemmini = call_eqv(gemmini, "resadd_relu_cpu(_)", resadd_relu)
+    return gemmini
+
+
+nlb = schedule_nlb()
+
+
+def schedule_braggnn():
+    gemmini = rename(braggnn_inference_cpu, "braggnn_inference")
+    gemmini = call_eqv(gemmini, "conv1_cpu(_)", conv1)
+    gemmini = call_eqv(gemmini, "nlb_cpu(_)", nlb)
+    gemmini = call_eqv(gemmini, "conv2_cpu(_)", conv2)
+    gemmini = call_eqv(gemmini, "conv3_cpu(_)", conv3)
+    gemmini = call_eqv(gemmini, "fc1_cpu(_)", fc1)
+    gemmini = call_eqv(gemmini, "fc2_cpu(_)", fc2)
+    gemmini = call_eqv(gemmini, "fc3_cpu(_)", fc3)
+    gemmini = call_eqv(gemmini, "fc4_cpu(_)", fc4)
+    gemmini = call_eqv(gemmini, "fc_output_cpu(_)", fc_output)
+    return gemmini
+
+
+braggnn_inference = schedule_braggnn()
+
+
+def schedule_eval():
+    gemmini = rename(braggnn_eval_cpu, "braggnn_eval")
+    gemmini = call_eqv(gemmini, "braggnn_inference_cpu(_)", braggnn_inference)
+    gemmini = inline(gemmini, "braggnn_inference(_)")
+    
+    # Optimize CPU loops by fully unrolling them to eliminate loop overhead on the Rocket core
+    gemmini = unroll_loop(gemmini, "icol")
+    gemmini = unroll_loop(gemmini, "irow")
+    gemmini = unroll_loop(gemmini, "w")
+    gemmini = unroll_loop(gemmini, "h")
+    gemmini = unroll_loop(gemmini, "c")
+    gemmini = unroll_loop(gemmini, "r")
+    gemmini = unroll_loop(gemmini, "ch")
+    gemmini = unroll_loop(gemmini, "k")
+    return gemmini
+
+
+braggnn_eval = schedule_eval()
+# EVOLVE-BLOCK-END
+
+
+__all__ = ["braggnn_eval"]

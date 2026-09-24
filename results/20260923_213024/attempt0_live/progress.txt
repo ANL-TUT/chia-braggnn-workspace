@@ -1,0 +1,300 @@
+candidate_0001.py: PASSED cycles=45170.0 subpixel_error=0.219 score=1.0000 (new best)
+candidate_0003.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243 (new best)
+candidate_0005.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243
+candidate_0006.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243
+candidate_0004.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243
+candidate_0008.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243
+candidate_0007.py: PASSED cycles=41340.0 subpixel_error=0.219 score=1.0926 (new best)
+candidate_0009.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0010.py: PASSED cycles=44127.0 subpixel_error=0.219 score=1.0236
+candidate_0011.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0013.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0014.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0015.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0012.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0016.py: PASSED cycles=42338.0 subpixel_error=0.219 score=1.0669
+candidate_0017.py: PASSED cycles=41217.0 subpixel_error=0.219 score=1.0959 (new best)
+candidate_0019.py: PASSED cycles=41217.0 subpixel_error=0.219 score=1.0959
+candidate_0020.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0021.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0022.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0023.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0024.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0018.py: PASSED cycles=42172.0 subpixel_error=0.219 score=1.0711
+candidate_0025.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0027.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0028.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0002.py: FAILED at run cycles=None subpixel_error=None score=0.0000 -- /home/ishibehouku/chia-experiments/chipyard/.conda-env/lib/python3.10/site-packages/paramiko/pkey.py:82: CryptographyDeprecationWarning: TripleDES has been moved to cryptography.hazmat.decrepit.cip...
+candidate_0030.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected loop 'ch_o' to have constant bounds
+candidate_0031.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- TypeError: multiple values for argument 'tail'
+candidate_0032.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243
+candidate_0029.py: FAILED at run cycles=None subpixel_error=None score=0.0000 -- /home/ishibehouku/chia-experiments/chipyard/.conda-env/lib/python3.10/site-packages/paramiko/pkey.py:82: CryptographyDeprecationWarning: TripleDES has been moved to cryptography.hazmat.decrepit.cip...
+candidate_0033.py: FAILED at run cycles=None subpixel_error=None score=0.0000 -- /home/ishibehouku/chia-experiments/chipyard/.conda-env/lib/python3.10/site-packages/paramiko/pkey.py:82: CryptographyDeprecationWarning: TripleDES has been moved to cryptography.hazmat.decrepit.cip...
+candidate_0034.py: PASSED cycles=42340.0 subpixel_error=0.219 score=1.0668
+candidate_0036.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0035.py: PASSED cycles=42570.0 subpixel_error=0.219 score=1.0611
+candidate_0037.py: PASSED cycles=45145.0 subpixel_error=0.219 score=1.0006
+candidate_0039.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0040.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0041.py: PASSED cycles=42570.0 subpixel_error=0.219 score=1.0611
+candidate_0038.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0042.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0043.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0044.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0045.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0046.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0047.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0048.py: PASSED cycles=42570.0 subpixel_error=0.219 score=1.0611
+candidate_0026.py: PASSED cycles=45145.0 subpixel_error=0.219 score=1.0006
+candidate_0050.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0050.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0051.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0052.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0053.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0054.py: PASSED cycles=41340.0 subpixel_error=0.219 score=1.0926
+candidate_0056.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0056.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0057.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0059.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0060.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0061.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0063.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0064.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0058.py: PASSED cycles=42258.0 subpixel_error=0.219 score=1.0689
+candidate_0065.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0066.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0069.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0069.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0069.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0071.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0071.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0062.py: PASSED cycles=42860.0 subpixel_error=0.219 score=1.0539
+candidate_0073.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0074.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0075.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0076.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0077.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0078.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0079.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0072.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0080.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0082.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0082.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0083.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0084.py: PASSED cycles=41217.0 subpixel_error=0.219 score=1.0959
+candidate_0085.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0086.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0087.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0088.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0089.py: PASSED cycles=42172.0 subpixel_error=0.219 score=1.0711
+candidate_0090.py: PASSED cycles=42570.0 subpixel_error=0.219 score=1.0611
+candidate_0091.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0092.py: PASSED cycles=42340.0 subpixel_error=0.219 score=1.0668
+candidate_0093.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0095.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0096.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0098.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0099.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0100.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0094.py: PASSED cycles=39950.0 subpixel_error=0.219 score=1.1307 (new best)
+candidate_0101.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0102.py: PASSED cycles=42340.0 subpixel_error=0.219 score=1.0668
+candidate_0103.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0105.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0097.py: PASSED cycles=42448.0 subpixel_error=0.219 score=1.0641
+candidate_0106.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- ImportError: cannot import name 'rename_loop' from 'exo.API_scheduling' (/home/ray/anaconda3/lib/python3.10/site-packages/exo/API_scheduling.py)
+candidate_0107.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0108.py: PASSED cycles=42172.0 subpixel_error=0.219 score=1.0711
+candidate_0109.py: PASSED cycles=42448.0 subpixel_error=0.219 score=1.0641
+candidate_0111.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected loop 'ch_o' to have constant bounds
+candidate_0104.py: PASSED cycles=41734.0 subpixel_error=0.219 score=1.0823
+candidate_0113.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0114.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0115.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0116.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0110.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0117.py: PASSED cycles=42860.0 subpixel_error=0.219 score=1.0539
+candidate_0118.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0120.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0121.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0112.py: PASSED cycles=42597.0 subpixel_error=0.219 score=1.0604
+candidate_0122.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0123.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0124.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0125.py: PASSED cycles=45145.0 subpixel_error=0.219 score=1.0006
+candidate_0126.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0127.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0119.py: PASSED cycles=42597.0 subpixel_error=0.219 score=1.0604
+candidate_0128.py: PASSED cycles=42448.0 subpixel_error=0.219 score=1.0641
+candidate_0129.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0130.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0131.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0132.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0134.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0135.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0136.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- SyntaxError: invalid syntax
+candidate_0139.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0138.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0139.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0133.py: PASSED cycles=43013.0 subpixel_error=0.219 score=1.0501
+candidate_0141.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0142.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0144.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0145.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0146.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0140.py: PASSED cycles=43815.0 subpixel_error=0.219 score=1.0309
+candidate_0147.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0148.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0149.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0151.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0152.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0143.py: PASSED cycles=41863.0 subpixel_error=0.219 score=1.0790
+candidate_0153.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0154.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0156.py: PASSED cycles=42570.0 subpixel_error=0.219 score=1.0611
+candidate_0157.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0150.py: PASSED cycles=41863.0 subpixel_error=0.219 score=1.0790
+candidate_0155.py: PASSED cycles=42868.0 subpixel_error=0.219 score=1.0537
+candidate_0160.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0161.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0162.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0163.py: PASSED cycles=39950.0 subpixel_error=0.219 score=1.1307
+candidate_0164.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0159.py: PASSED cycles=41127.0 subpixel_error=0.219 score=1.0983
+candidate_0165.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0166.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0168.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0169.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0170.py: PASSED cycles=42448.0 subpixel_error=0.219 score=1.0641
+candidate_0158.py: PASSED cycles=42493.0 subpixel_error=0.219 score=1.0630
+candidate_0171.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: find: failed to find matches
+candidate_0172.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0174.py: PASSED cycles=42570.0 subpixel_error=0.219 score=1.0611
+candidate_0175.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0167.py: PASSED cycles=42632.0 subpixel_error=0.219 score=1.0595
+candidate_0176.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0177.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0178.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0179.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0181.py: PASSED cycles=42860.0 subpixel_error=0.219 score=1.0539
+candidate_0173.py: PASSED cycles=43024.0 subpixel_error=0.219 score=1.0499
+candidate_0183.py: PASSED cycles=42448.0 subpixel_error=0.219 score=1.0641
+candidate_0180.py: PASSED cycles=42890.0 subpixel_error=0.219 score=1.0532
+candidate_0185.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0186.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0187.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0188.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0189.py: PASSED cycles=41863.0 subpixel_error=0.219 score=1.0790
+candidate_0190.py: PASSED cycles=42340.0 subpixel_error=0.219 score=1.0668
+candidate_0182.py: PASSED cycles=46189.0 subpixel_error=0.219 score=0.9779
+candidate_0192.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0191.py: PASSED cycles=41863.0 subpixel_error=0.219 score=1.0790
+candidate_0193.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- ValueError: argument 1, 'block_cursor' to reorder_stmts: expected a block of size 2, but got a block of size 1
+candidate_0194.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0195.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0196.py: PASSED cycles=41863.0 subpixel_error=0.219 score=1.0790
+candidate_0184.py: PASSED cycles=40288.0 subpixel_error=0.219 score=1.1212
+candidate_0198.py: PASSED cycles=42448.0 subpixel_error=0.219 score=1.0641
+candidate_0199.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0200.py: PASSED cycles=42448.0 subpixel_error=0.219 score=1.0641
+candidate_0201.py: PASSED cycles=41127.0 subpixel_error=0.219 score=1.0983
+candidate_0202.py: PASSED cycles=42448.0 subpixel_error=0.219 score=1.0641
+candidate_0203.py: PASSED cycles=41127.0 subpixel_error=0.219 score=1.0983
+candidate_0204.py: PASSED cycles=42448.0 subpixel_error=0.219 score=1.0641
+candidate_0197.py: PASSED cycles=42816.0 subpixel_error=0.219 score=1.0550
+candidate_0208.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0206.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: find: failed to find matches
+candidate_0207.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0208.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0210.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- ValueError: argument 1, 'block_cursor' to reorder_stmts: expected a block of size 2, but got a block of size 1
+candidate_0211.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0212.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0213.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- SyntaxError: invalid syntax
+candidate_0214.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0215.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0216.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0209.py: PASSED cycles=42860.0 subpixel_error=0.219 score=1.0539
+candidate_0217.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0218.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0220.py: PASSED cycles=42860.0 subpixel_error=0.219 score=1.0539
+candidate_0221.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0222.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0223.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0224.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0219.py: PASSED cycles=43112.0 subpixel_error=0.219 score=1.0477
+candidate_0226.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- ValueError: argument 1, 'block_cursor' to reorder_stmts: expected a block of size 2, but got a block of size 1
+candidate_0227.py: PASSED cycles=42816.0 subpixel_error=0.219 score=1.0550
+candidate_0225.py: PASSED cycles=41510.0 subpixel_error=0.219 score=1.0882
+candidate_0230.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664
+candidate_0231.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0232.py: PASSED cycles=42860.0 subpixel_error=0.219 score=1.0539
+candidate_0233.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0234.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.LoopIR_unification.UnificationError: Unification of various index expressions failed
+candidate_0229.py: PASSED cycles=43239.0 subpixel_error=0.219 score=1.0447
+candidate_0235.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0236.py: PASSED cycles=39950.0 subpixel_error=0.219 score=1.1307
+candidate_0237.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- ValueError: delta_lo must be non-negative
+candidate_0238.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0239.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0240.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0228.py: PASSED cycles=40094.0 subpixel_error=0.219 score=1.1266
+candidate_0241.py: PASSED cycles=41127.0 subpixel_error=0.219 score=1.0983
+candidate_0244.py: PASSED cycles=41127.0 subpixel_error=0.219 score=1.0983
+candidate_0242.py: PASSED cycles=42816.0 subpixel_error=0.219 score=1.0550
+candidate_0246.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0245.py: PASSED cycles=41336.0 subpixel_error=0.219 score=1.0928
+candidate_0247.py: PASSED cycles=42570.0 subpixel_error=0.219 score=1.0611
+candidate_0249.py: PASSED cycles=41863.0 subpixel_error=0.219 score=1.0790
+candidate_0250.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0251.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0252.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0253.py: PASSED cycles=42890.0 subpixel_error=0.219 score=1.0532
+candidate_0248.py: PASSED cycles=43297.0 subpixel_error=0.219 score=1.0433
+candidate_0254.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0255.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0256.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0257.py: PASSED cycles=42860.0 subpixel_error=0.219 score=1.0539
+candidate_0258.py: PASSED cycles=42448.0 subpixel_error=0.219 score=1.0641
+candidate_0243.py: PASSED cycles=46453.0 subpixel_error=0.219 score=0.9724
+candidate_0260.py: PASSED cycles=41863.0 subpixel_error=0.219 score=1.0790
+candidate_0259.py: PASSED cycles=42493.0 subpixel_error=0.219 score=1.0630
+candidate_0261.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0262.py: PASSED cycles=42448.0 subpixel_error=0.219 score=1.0641
+candidate_0263.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0265.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0265.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0266.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0267.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0268.py: PASSED cycles=42448.0 subpixel_error=0.219 score=1.0641
+candidate_0270.py: PASSED cycles=39950.0 subpixel_error=0.219 score=1.1307
+candidate_0269.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0271.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0273.py: PASSED cycles=42816.0 subpixel_error=0.219 score=1.0550
+candidate_0272.py: PASSED cycles=42493.0 subpixel_error=0.219 score=1.0630
+candidate_0274.py: PASSED cycles=41863.0 subpixel_error=0.219 score=1.0790
+candidate_0277.py: PASSED cycles=42816.0 subpixel_error=0.219 score=1.0550
+candidate_0278.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0279.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- TypeError: argument 3, 'new_iters' to divide_loop: expected a list or tuple
+candidate_0280.py: PASSED cycles=42570.0 subpixel_error=0.219 score=1.0611
+candidate_0281.py: PASSED cycles=39950.0 subpixel_error=0.219 score=1.1307
+candidate_0275.py: PASSED cycles=42857.0 subpixel_error=0.219 score=1.0540
+candidate_0276.py: PASSED cycles=40322.0 subpixel_error=0.219 score=1.1202
+candidate_0284.py: PASSED cycles=42816.0 subpixel_error=0.219 score=1.0550
+candidate_0285.py: PASSED cycles=42448.0 subpixel_error=0.219 score=1.0641
+candidate_0286.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: find: failed to find matches
+candidate_0287.py: PASSED cycles=43112.0 subpixel_error=0.219 score=1.0477
+candidate_0282.py: PASSED cycles=39964.0 subpixel_error=0.219 score=1.1303
+candidate_0288.py: PASSED cycles=43112.0 subpixel_error=0.219 score=1.0477
+candidate_0289.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0290.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0292.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0283.py: PASSED cycles=41843.0 subpixel_error=0.219 score=1.0795
+candidate_0294.py: PASSED cycles=42860.0 subpixel_error=0.219 score=1.0539
+candidate_0291.py: PASSED cycles=42484.0 subpixel_error=0.219 score=1.0632
+candidate_0296.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0297.py: PASSED cycles=39950.0 subpixel_error=0.219 score=1.1307
+candidate_0293.py: PASSED cycles=43259.0 subpixel_error=0.219 score=1.0442
+candidate_0299.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- ValueError: argument 1, 'block_cursor' to reorder_stmts: expected a block of size 2, but got a block of size 1
+candidate_0300.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0301.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
+candidate_0302.py: PASSED cycles=42853.0 subpixel_error=0.219 score=1.0541
