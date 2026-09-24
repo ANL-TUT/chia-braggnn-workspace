@@ -1,0 +1,12 @@
+== exo/braggnn_schedule.py
+  conv1                     5,065   10.8%
+  nlb                      28,970   61.7%
+  conv2                     7,648   16.3%
+  conv3                     1,693    3.6%
+  fc1                       2,460    5.2%
+  fc2                         286    0.6%
+  fc3                         272    0.6%
+  fc4                         275    0.6%
+  fc_output                   266    0.6%
+  (sum of marks)           46,935
+  avg cycles/patch 47002, avg error [0.219, 0.151] px

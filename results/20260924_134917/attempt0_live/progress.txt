@@ -36,3 +36,8 @@ candidate_0037.py: FAILED at build cycles=None subpixel_error=None score=0.0000 
 candidate_0033.py: PASSED cycles=42646.0 subpixel_error=0.219 score=1.0592
 candidate_0038.py: PASSED cycles=45647.0 subpixel_error=0.219 score=0.9896
 candidate_0040.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: find: failed to find matches
+candidate_0039.py: PASSED cycles=42826.0 subpixel_error=0.219 score=1.0547
+candidate_0041.py: PASSED cycles=42390.0 subpixel_error=0.219 score=1.0656
+candidate_0042.py: PASSED cycles=43030.0 subpixel_error=0.219 score=1.0497
+candidate_0044.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0043.py: PASSED cycles=42570.0 subpixel_error=0.219 score=1.0611
