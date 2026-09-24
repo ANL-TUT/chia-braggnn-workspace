@@ -52,32 +52,22 @@ from gemmini import (
 )
 
 # EVOLVE-BLOCK-START
-from exo.API_scheduling import unroll_loop
+NLB_ROW_TILE = 8
 
 
 def fence_after(p, pattern):
     return insert_noop_call(p, p.find(pattern).after(), fence, [])
 
 
-def sched_conv(cpu, in_dim, in_ch, out_ch, k, act=False):
+def sched_conv(cpu, in_dim, in_ch, out_ch, k, act=False, fence=True):
     name = cpu.name()[: -len("_cpu")]
 
     do_conv = make_loop_conv_ws(f"do_{name}", in_dim, in_ch, out_ch, k, act)
 
     gemmini = rename(cpu, name)
     gemmini = replace(gemmini, "for orow in _:_", do_conv)
-    gemmini = fence_after(gemmini, f"do_{name}(_)")
-
-    return gemmini
-
-
-def sched_conv_nofence(cpu, in_dim, in_ch, out_ch, k, act=False):
-    name = cpu.name()[: -len("_cpu")]
-
-    do_conv = make_loop_conv_ws(f"do_{name}", in_dim, in_ch, out_ch, k, act)
-
-    gemmini = rename(cpu, name)
-    gemmini = replace(gemmini, "for orow in _:_", do_conv)
+    if fence:
+        gemmini = fence_after(gemmini, f"do_{name}(_)")
 
     return gemmini
 
@@ -100,8 +90,11 @@ def sched_matmul_trans_b(cpu):
     do_matmul = make_loop_matmul_trans_b(f"do_{name}", CONV2_FILTERS, CONV1_DIM)
 
     gemmini = rename(cpu, name)
-    gemmini = replace(gemmini, "for i1 in _:_", do_matmul)
-    gemmini = fence_after(gemmini, f"do_{name}(_)")
+    gemmini = divide_loop(gemmini, "i1", NLB_ROW_TILE, ["i1_o", "i1_i"], tail="cut")
+    gemmini = simplify(gemmini)
+    gemmini = replace(gemmini, "for i1_i in _:_", do_matmul)
+    gemmini = replace(gemmini, gemmini.find_loop("i1_o").next(), do_matmul)
+    gemmini = fence_after(gemmini, f"do_{name}(_) #1")
 
     return gemmini
 
@@ -112,8 +105,11 @@ def sched_softmax(cpu):
     do_softmax = make_loop_softmax(f"do_{name}", CONV1_DIM, SOFTMAX_MAX_SHIFT)
 
     gemmini = rename(cpu, name)
-    gemmini = replace(gemmini, "for i1 in _:_", do_softmax)
-    gemmini = fence_after(gemmini, f"do_{name}(_)")
+    gemmini = divide_loop(gemmini, "i1", NLB_ROW_TILE, ["i1_o", "i1_i"], tail="cut")
+    gemmini = simplify(gemmini)
+    gemmini = replace(gemmini, "for i1_i in _:_", do_softmax)
+    gemmini = replace(gemmini, gemmini.find_loop("i1_o").next(), do_softmax)
+    gemmini = fence_after(gemmini, f"do_{name}(_) #1")
 
     return gemmini
 
@@ -145,7 +141,7 @@ def sched_resadd(cpu):
 conv1 = sched_conv(conv1_cpu, INPUT_DIM, 1, CONV1_FILTERS, 3)
 conv2 = sched_conv(conv2_cpu, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 3, act=True)
 conv3 = sched_conv(conv3_cpu, CONV2_DIM, CONV2_FILTERS, CONV3_FILTERS, 3, act=True)
-nlb_qkv_conv = sched_conv_nofence(nlb_qkv_conv_cpu, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 1)
+nlb_qkv_conv = sched_conv(nlb_qkv_conv_cpu, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 1, fence=False)
 nlb_out_conv = sched_conv(nlb_out_conv_cpu, CONV1_DIM, CONV2_FILTERS, CONV1_FILTERS, 1)
 
 fc1 = sched_fc(fc1_cpu, CONV3_FILTERS, CONV3_DIM, CONV3_DIM, FC1_UNITS, act=True)
@@ -165,7 +161,7 @@ def schedule_nlb():
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
-    gemmini = fence_after(gemmini, "nlb_qkv_conv(_) #1")
+    gemmini = fence_after(gemmini, "nlb_qkv_conv(_) #2")
     gemmini = call_eqv(gemmini, "matmul_theta_phi_cpu(_)", matmul_theta_phi)
     gemmini = call_eqv(gemmini, "nlb_softmax_cpu(_)", nlb_softmax)
     gemmini = call_eqv(gemmini, "matmul_attention_g_cpu(_)", matmul_attention_g)
@@ -195,20 +191,20 @@ braggnn_inference = schedule_braggnn()
 
 
 def schedule_eval():
+    from exo.API_scheduling import unroll_loop
+
     gemmini = rename(braggnn_eval_cpu, "braggnn_eval")
     gemmini = call_eqv(gemmini, "braggnn_inference_cpu(_)", braggnn_inference)
     gemmini = inline(gemmini, "braggnn_inference(_)")
-    
-    # CPU optimizations: unroll copy loops and quantization
-    gemmini = unroll_loop(gemmini, "icol")
-    gemmini = unroll_loop(gemmini, "irow")
+
+    # Optimize CPU loop for input quantization
     gemmini = unroll_loop(gemmini, "w")
     gemmini = unroll_loop(gemmini, "h")
-    gemmini = unroll_loop(gemmini, "ch")
+
+    # Optimize CPU loop for flattening
     gemmini = unroll_loop(gemmini, "c")
     gemmini = unroll_loop(gemmini, "r")
-    gemmini = unroll_loop(gemmini, "k")
-    gemmini = simplify(gemmini)
+
     return gemmini
 
 

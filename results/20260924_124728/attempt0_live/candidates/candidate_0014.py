@@ -52,7 +52,7 @@ from gemmini import (
 )
 
 # EVOLVE-BLOCK-START
-from exo.API_scheduling import unroll_loop
+from exo.API_scheduling import unroll_loop, reorder_stmts
 
 
 def fence_after(p, pattern):
@@ -118,6 +118,17 @@ def sched_softmax(cpu):
     return gemmini
 
 
+def sched_softmax_nofence(cpu):
+    name = cpu.name()[: -len("_cpu")]
+
+    do_softmax = make_loop_softmax(f"do_{name}", CONV1_DIM, SOFTMAX_MAX_SHIFT)
+
+    gemmini = rename(cpu, name)
+    gemmini = replace(gemmini, "for i1 in _:_", do_softmax)
+
+    return gemmini
+
+
 def sched_matmul(cpu):
     name = cpu.name()[: -len("_cpu")]
 
@@ -155,22 +166,40 @@ fc4 = sched_fc(fc4_cpu, FC3_UNITS, 1, 1, FC4_UNITS, act=True)
 fc_output = sched_fc(fc_output_cpu, FC4_UNITS, 1, 1, OUTPUT_UNITS)
 
 matmul_theta_phi = sched_matmul_trans_b(matmul_theta_phi_cpu)
-nlb_softmax = sched_softmax(nlb_softmax_cpu)
+nlb_softmax = sched_softmax_nofence(nlb_softmax_cpu)
 matmul_attention_g = sched_matmul(matmul_attention_g_cpu)
 resadd_relu = sched_resadd(resadd_relu_cpu)
 
 
 def schedule_nlb():
     gemmini = rename(nlb_cpu, "nlb")
-    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
+    
+    # Reorder g down so it runs concurrently with nlb_softmax
+    gemmini = reorder_stmts(gemmini, "nlb_qkv_conv_cpu(_) #2 ; matmul_theta_phi_cpu(_)")
+    gemmini = reorder_stmts(gemmini, "nlb_qkv_conv_cpu(_) #2 ; nlb_softmax_cpu(_)")
+    
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
     gemmini = fence_after(gemmini, "nlb_qkv_conv(_) #1")
+    
     gemmini = call_eqv(gemmini, "matmul_theta_phi_cpu(_)", matmul_theta_phi)
     gemmini = call_eqv(gemmini, "nlb_softmax_cpu(_)", nlb_softmax)
+    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
+    gemmini = fence_after(gemmini, "nlb_qkv_conv(_) #2")
+    
     gemmini = call_eqv(gemmini, "matmul_attention_g_cpu(_)", matmul_attention_g)
     gemmini = call_eqv(gemmini, "nlb_out_conv_cpu(_)", nlb_out_conv)
     gemmini = call_eqv(gemmini, "resadd_relu_cpu(_)", resadd_relu)
+    
+    # Inline sub-calls to eliminate function call overhead
+    gemmini = inline(gemmini, "nlb_qkv_conv(_)")
+    gemmini = inline(gemmini, "nlb_qkv_conv(_)")
+    gemmini = inline(gemmini, "nlb_qkv_conv(_)")
+    gemmini = inline(gemmini, "matmul_theta_phi(_)")
+    gemmini = inline(gemmini, "nlb_softmax(_)")
+    gemmini = inline(gemmini, "matmul_attention_g(_)")
+    gemmini = inline(gemmini, "nlb_out_conv(_)")
+    gemmini = inline(gemmini, "resadd_relu(_)")
     return gemmini
 
 
@@ -188,6 +217,17 @@ def schedule_braggnn():
     gemmini = call_eqv(gemmini, "fc3_cpu(_)", fc3)
     gemmini = call_eqv(gemmini, "fc4_cpu(_)", fc4)
     gemmini = call_eqv(gemmini, "fc_output_cpu(_)", fc_output)
+    
+    # Inline all layers to eliminate function call overhead completely
+    gemmini = inline(gemmini, "conv1(_)")
+    gemmini = inline(gemmini, "nlb(_)")
+    gemmini = inline(gemmini, "conv2(_)")
+    gemmini = inline(gemmini, "conv3(_)")
+    gemmini = inline(gemmini, "fc1(_)")
+    gemmini = inline(gemmini, "fc2(_)")
+    gemmini = inline(gemmini, "fc3(_)")
+    gemmini = inline(gemmini, "fc4(_)")
+    gemmini = inline(gemmini, "fc_output(_)")
     return gemmini
 
 
@@ -208,7 +248,6 @@ def schedule_eval():
     gemmini = unroll_loop(gemmini, "c")
     gemmini = unroll_loop(gemmini, "r")
     gemmini = unroll_loop(gemmini, "k")
-    gemmini = simplify(gemmini)
     return gemmini
 
 

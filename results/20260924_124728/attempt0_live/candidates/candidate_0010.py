@@ -52,6 +52,8 @@ from gemmini import (
 )
 
 # EVOLVE-BLOCK-START
+NLB_ROW_TILE = 8
+
 from exo.API_scheduling import unroll_loop
 
 
@@ -100,8 +102,11 @@ def sched_matmul_trans_b(cpu):
     do_matmul = make_loop_matmul_trans_b(f"do_{name}", CONV2_FILTERS, CONV1_DIM)
 
     gemmini = rename(cpu, name)
-    gemmini = replace(gemmini, "for i1 in _:_", do_matmul)
-    gemmini = fence_after(gemmini, f"do_{name}(_)")
+    gemmini = divide_loop(gemmini, "i1", NLB_ROW_TILE, ["i1_o", "i1_i"], tail="cut")
+    gemmini = simplify(gemmini)
+    gemmini = replace(gemmini, "for i1_i in _:_", do_matmul)
+    gemmini = replace(gemmini, gemmini.find_loop("i1_o").next(), do_matmul)
+    gemmini = fence_after(gemmini, f"do_{name}(_) #1")
 
     return gemmini
 
@@ -112,8 +117,11 @@ def sched_softmax(cpu):
     do_softmax = make_loop_softmax(f"do_{name}", CONV1_DIM, SOFTMAX_MAX_SHIFT)
 
     gemmini = rename(cpu, name)
-    gemmini = replace(gemmini, "for i1 in _:_", do_softmax)
-    gemmini = fence_after(gemmini, f"do_{name}(_)")
+    gemmini = divide_loop(gemmini, "i1", NLB_ROW_TILE, ["i1_o", "i1_i"], tail="cut")
+    gemmini = simplify(gemmini)
+    gemmini = replace(gemmini, "for i1_i in _:_", do_softmax)
+    gemmini = replace(gemmini, gemmini.find_loop("i1_o").next(), do_softmax)
+    gemmini = fence_after(gemmini, f"do_{name}(_) #1")
 
     return gemmini
 
@@ -165,7 +173,7 @@ def schedule_nlb():
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
-    gemmini = fence_after(gemmini, "nlb_qkv_conv(_) #1")
+    gemmini = fence_after(gemmini, "nlb_qkv_conv(_) #2")
     gemmini = call_eqv(gemmini, "matmul_theta_phi_cpu(_)", matmul_theta_phi)
     gemmini = call_eqv(gemmini, "nlb_softmax_cpu(_)", nlb_softmax)
     gemmini = call_eqv(gemmini, "matmul_attention_g_cpu(_)", matmul_attention_g)
@@ -208,7 +216,6 @@ def schedule_eval():
     gemmini = unroll_loop(gemmini, "c")
     gemmini = unroll_loop(gemmini, "r")
     gemmini = unroll_loop(gemmini, "k")
-    gemmini = simplify(gemmini)
     return gemmini
 
 

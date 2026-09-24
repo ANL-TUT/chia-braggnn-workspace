@@ -1,1 +1,12 @@
 candidate_0001.py: PASSED cycles=45170.0 subpixel_error=0.219 score=1.0000 (new best)
+candidate_0002.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- NameError: name 'unroll_loop' is not defined
+candidate_0003.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: find: failed to find matches
+candidate_0006.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: find: failed to find matches
+candidate_0004.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243 (new best)
+candidate_0005.py: PASSED cycles=44131.0 subpixel_error=0.219 score=1.0235
+candidate_0008.py: PASSED cycles=43815.0 subpixel_error=0.219 score=1.0309 (new best)
+candidate_0009.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664 (new best)
+candidate_0007.py: PASSED cycles=43815.0 subpixel_error=0.219 score=1.0309
+candidate_0011.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0012.py: PASSED cycles=42340.0 subpixel_error=0.219 score=1.0668 (new best)
+candidate_0014.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- ValueError: argument 1, 'block_cursor' to reorder_stmts: expected a block of size 2, but got a block of size 1

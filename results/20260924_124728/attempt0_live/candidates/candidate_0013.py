@@ -164,8 +164,8 @@ def schedule_nlb():
     gemmini = rename(nlb_cpu, "nlb")
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
-    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
     gemmini = fence_after(gemmini, "nlb_qkv_conv(_) #1")
+    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
     gemmini = call_eqv(gemmini, "matmul_theta_phi_cpu(_)", matmul_theta_phi)
     gemmini = call_eqv(gemmini, "nlb_softmax_cpu(_)", nlb_softmax)
     gemmini = call_eqv(gemmini, "matmul_attention_g_cpu(_)", matmul_attention_g)
@@ -208,7 +208,6 @@ def schedule_eval():
     gemmini = unroll_loop(gemmini, "c")
     gemmini = unroll_loop(gemmini, "r")
     gemmini = unroll_loop(gemmini, "k")
-    gemmini = simplify(gemmini)
     return gemmini
 
 
