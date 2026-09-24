@@ -1,0 +1,24 @@
+== results/20260923_213024/attempt0_live/best_braggnn_schedule.py  [lower_conv: conv2]
+  conv1                     3,898    8.1%
+  nlb                      27,284   57.0%
+  conv2                    12,452   26.0%
+  conv3                     1,707    3.6%
+  fc1                       1,456    3.0%
+  fc2                         286    0.6%
+  fc3                         277    0.6%
+  fc4                         267    0.6%
+  fc_output                   263    0.5%
+  (sum of marks)           47,890
+  avg cycles/patch 47951, avg error [0.219, 0.151] px
+== results/20260923_213024/attempt0_live/best_braggnn_schedule.py  [lower_conv: conv3]
+  conv1                     3,882    8.9%
+  nlb                      27,279   62.7%
+  conv2                     7,651   17.6%
+  conv3                     2,112    4.9%
+  fc1                       1,474    3.4%
+  fc2                         291    0.7%
+  fc3                         272    0.6%
+  fc4                         269    0.6%
+  fc_output                   261    0.6%
+  (sum of marks)           43,491
+  avg cycles/patch 43557, avg error [0.219, 0.151] px

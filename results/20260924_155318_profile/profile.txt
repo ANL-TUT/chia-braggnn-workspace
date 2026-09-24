@@ -1,0 +1,19 @@
+== exo/braggnn_schedule.py
+  conv1                     5,077   10.8%
+  nlb_qkv_conv              2,264    4.8%
+  nlb_qkv_conv              2,236    4.7%
+  nlb_qkv_conv              2,235    4.7%
+  matmul_theta_phi          3,403    7.2%
+  nlb_softmax               9,855   20.9%
+  matmul_attention_g        2,435    5.2%
+  nlb_out_conv              2,830    6.0%
+  resadd_relu               3,956    8.4%
+  conv2                     7,626   16.2%
+  conv3                     1,651    3.5%
+  fc1                       2,464    5.2%
+  fc2                         288    0.6%
+  fc3                         271    0.6%
+  fc4                         284    0.6%
+  fc_output                   263    0.6%
+  (sum of marks)           47,138
+  avg cycles/patch 47198, avg error [0.219, 0.151] px

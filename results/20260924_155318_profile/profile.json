@@ -1,0 +1,77 @@
+[
+  {
+    "schedule": "exo/braggnn_schedule.py",
+    "lowered": [],
+    "marks": [
+      [
+        "conv1",
+        5077
+      ],
+      [
+        "nlb_qkv_conv",
+        2264
+      ],
+      [
+        "nlb_qkv_conv",
+        2236
+      ],
+      [
+        "nlb_qkv_conv",
+        2235
+      ],
+      [
+        "matmul_theta_phi",
+        3403
+      ],
+      [
+        "nlb_softmax",
+        9855
+      ],
+      [
+        "matmul_attention_g",
+        2435
+      ],
+      [
+        "nlb_out_conv",
+        2830
+      ],
+      [
+        "resadd_relu",
+        3956
+      ],
+      [
+        "conv2",
+        7626
+      ],
+      [
+        "conv3",
+        1651
+      ],
+      [
+        "fc1",
+        2464
+      ],
+      [
+        "fc2",
+        288
+      ],
+      [
+        "fc3",
+        271
+      ],
+      [
+        "fc4",
+        284
+      ],
+      [
+        "fc_output",
+        263
+      ]
+    ],
+    "avg_cycles": 47198,
+    "avg_error": [
+      0.219,
+      0.151
+    ]
+  }
+]

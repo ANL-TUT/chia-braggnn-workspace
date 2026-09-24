@@ -1,0 +1,100 @@
+[
+  {
+    "schedule": "results/20260923_213024/attempt0_live/best_braggnn_schedule.py",
+    "lowered": [
+      "conv2"
+    ],
+    "marks": [
+      [
+        "conv1",
+        3898
+      ],
+      [
+        "nlb",
+        27284
+      ],
+      [
+        "conv2",
+        12452
+      ],
+      [
+        "conv3",
+        1707
+      ],
+      [
+        "fc1",
+        1456
+      ],
+      [
+        "fc2",
+        286
+      ],
+      [
+        "fc3",
+        277
+      ],
+      [
+        "fc4",
+        267
+      ],
+      [
+        "fc_output",
+        263
+      ]
+    ],
+    "avg_cycles": 47951,
+    "avg_error": [
+      0.219,
+      0.151
+    ]
+  },
+  {
+    "schedule": "results/20260923_213024/attempt0_live/best_braggnn_schedule.py",
+    "lowered": [
+      "conv3"
+    ],
+    "marks": [
+      [
+        "conv1",
+        3882
+      ],
+      [
+        "nlb",
+        27279
+      ],
+      [
+        "conv2",
+        7651
+      ],
+      [
+        "conv3",
+        2112
+      ],
+      [
+        "fc1",
+        1474
+      ],
+      [
+        "fc2",
+        291
+      ],
+      [
+        "fc3",
+        272
+      ],
+      [
+        "fc4",
+        269
+      ],
+      [
+        "fc_output",
+        261
+      ]
+    ],
+    "avg_cycles": 43557,
+    "avg_error": [
+      0.219,
+      0.151
+    ]
+  }
+]

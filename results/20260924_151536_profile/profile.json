@@ -45,5 +45,234 @@
       0.219,
       0.151
     ]
+  },
+  {
+    "schedule": "results/20260923_213024/attempt0_live/best_braggnn_schedule.py",
+    "lowered": [],
+    "marks": [
+      [
+        "conv1",
+        3895
+      ],
+      [
+        "nlb",
+        27232
+      ],
+      [
+        "conv2",
+        7654
+      ],
+      [
+        "conv3",
+        1701
+      ],
+      [
+        "fc1",
+        1449
+      ],
+      [
+        "fc2",
+        294
+      ],
+      [
+        "fc3",
+        275
+      ],
+      [
+        "fc4",
+        271
+      ],
+      [
+        "fc_output",
+        263
+      ]
+    ],
+    "avg_cycles": 43088,
+    "avg_error": [
+      0.219,
+      0.151
+    ]
+  },
+  {
+    "schedule": "results/20260923_213024/attempt0_live/best_braggnn_schedule.py",
+    "lowered": [
+      "conv2"
+    ],
+    "marks": [
+      [
+        "conv1",
+        3918
+      ],
+      [
+        "nlb",
+        27264
+      ],
+      [
+        "conv2",
+        119245
+      ],
+      [
+        "conv3",
+        1735
+      ],
+      [
+        "fc1",
+        1466
+      ],
+      [
+        "fc2",
+        287
+      ],
+      [
+        "fc3",
+        271
+      ],
+      [
+        "fc4",
+        276
+      ],
+      [
+        "fc_output",
+        259
+      ]
+    ],
+    "avg_cycles": 154802,
+    "avg_error": [
+      0.219,
+      0.151
+    ]
+  },
+  {
+    "schedule": "results/20260923_213024/attempt0_live/best_braggnn_schedule.py",
+    "lowered": [
+      "conv2",
+      "conv3"
+    ],
+    "marks": [
+      [
+        "conv1",
+        3933
+      ],
+      [
+        "nlb",
+        27262
+      ],
+      [
+        "conv2",
+        119854
+      ],
+      [
+        "conv3",
+        18185
+      ],
+      [
+        "fc1",
+        1464
+      ],
+      [
+        "fc2",
+        291
+      ],
+      [
+        "fc3",
+        279
+      ],
+      [
+        "fc4",
+        277
+      ],
+      [
+        "fc_output",
+        264
+      ]
+    ],
+    "avg_cycles": 171883,
+    "avg_error": [
+      0.219,
+      0.151
+    ]
+  },
+  {
+    "schedule": "exo/braggnn_schedule_fusion.py",
+    "lowered": [],
+    "marks": [
+      [
+        "conv1",
+        5089
+      ],
+      [
+        "nlb",
+        28981
+      ],
+      [
+        "config_ld_i8_block_id2",
+        35
+      ],
+      [
+        "config_ld_repeat",
+        1833
+      ],
+      [
+        "config_ld_i8_block_id1",
+        277
+      ],
+      [
+        "config_matmul_trans_b",
+        1222
+      ],
+      [
+        "config_st_acc_i8",
+        9370
+      ],
+      [
+        "fence",
+        345
+      ],
+      [
+        "config_ld_i8_block_id2",
+        45
+      ],
+      [
+        "config_ld_repeat",
+        415
+      ],
+      [
+        "config_ld_i8_block_id1",
+        88
+      ],
+      [
+        "config_st_acc_i8",
+        1777
+      ],
+      [
+        "fence",
+        131
+      ],
+      [
+        "fc1",
+        2433
+      ],
+      [
+        "fc2",
+        294
+      ],
+      [
+        "fc3",
+        275
+      ],
+      [
+        "fc4",
+        275
+      ],
+      [
+        "fc_output",
+        270
+      ]
+    ],
+    "avg_cycles": 53209,
+    "avg_error": [
+      0.219,
+      0.151
+    ]
   }
 ]
