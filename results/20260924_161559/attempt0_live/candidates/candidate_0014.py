@@ -217,9 +217,9 @@ def schedule_eval():
     gemmini = unroll_loop(gemmini, "irow")
     gemmini = unroll_loop(gemmini, "w")
     gemmini = unroll_loop(gemmini, "h")
-    gemmini = unroll_loop(gemmini, "ch")
     gemmini = unroll_loop(gemmini, "c")
     gemmini = unroll_loop(gemmini, "r")
+    gemmini = unroll_loop(gemmini, "ch")
     return gemmini
 
 

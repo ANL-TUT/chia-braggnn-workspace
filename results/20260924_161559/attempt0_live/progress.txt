@@ -1,3 +1,17 @@
 candidate_0001.py: PASSED cycles=45170.0 subpixel_error=0.219 score=1.0000 (new best)
 candidate_0002.py: PASSED cycles=45654.0 subpixel_error=0.219 score=0.9894
 candidate_0003.py: PASSED cycles=44333.0 subpixel_error=0.219 score=1.0189 (new best)
+candidate_0005.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243 (new best)
+candidate_0007.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- TypeError: multiple procs named do_nlb_qkv_conv
+candidate_0006.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243
+candidate_0008.py: PASSED cycles=42496.0 subpixel_error=0.219 score=1.0629 (new best)
+candidate_0010.py: PASSED cycles=45654.0 subpixel_error=0.219 score=0.9894
+candidate_0011.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: find: failed to find matches
+candidate_0009.py: PASSED cycles=42826.0 subpixel_error=0.219 score=1.0547
+candidate_0012.py: PASSED cycles=42358.0 subpixel_error=0.219 score=1.0664 (new best)
+candidate_0013.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0014.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0015.py: PASSED cycles=43815.0 subpixel_error=0.219 score=1.0309
+candidate_0017.py: PASSED cycles=42826.0 subpixel_error=0.219 score=1.0547
+candidate_0018.py: PASSED cycles=43815.0 subpixel_error=0.219 score=1.0309
+candidate_0019.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612

@@ -120,14 +120,15 @@ def sched_matmul_trans_b(cpu):
     return gemmini
 
 
-def sched_softmax(cpu):
+def sched_softmax(cpu, fence=True):
     name = cpu.name()[: -len("_cpu")]
 
     do_softmax = make_loop_softmax(f"do_{name}", CONV1_DIM, SOFTMAX_MAX_SHIFT)
 
     gemmini = rename(cpu, name)
     gemmini = replace(gemmini, "for i1 in _:_", do_softmax)
-    gemmini = fence_after(gemmini, f"do_{name}(_)")
+    if fence:
+        gemmini = fence_after(gemmini, f"do_{name}(_)")
 
     return gemmini
 
@@ -169,19 +170,30 @@ fc4 = sched_fc(fc4_cpu, FC3_UNITS, 1, 1, FC4_UNITS, act=True)
 fc_output = sched_fc(fc_output_cpu, FC4_UNITS, 1, 1, OUTPUT_UNITS)
 
 matmul_theta_phi = sched_matmul_trans_b(matmul_theta_phi_cpu)
-nlb_softmax = sched_softmax(nlb_softmax_cpu)
+nlb_softmax_nofence = sched_softmax(nlb_softmax_cpu, fence=False)
 matmul_attention_g = sched_matmul(matmul_attention_g_cpu)
 resadd_relu = sched_resadd(resadd_relu_cpu)
 
 
 def schedule_nlb():
     gemmini = rename(nlb_cpu, "nlb")
+    
+    # Move the third conv (g_conv) down so it runs concurrently with matmul_theta_phi and nlb_softmax
+    gemmini = reorder_stmts(gemmini, gemmini.find("nlb_qkv_conv_cpu(inp, nlb_g_weights, _, _, _); attention_raw : _"))
+    gemmini = reorder_stmts(gemmini, gemmini.find("nlb_qkv_conv_cpu(inp, nlb_g_weights, _, _, _); matmul_theta_phi_cpu(_)"))
+    gemmini = reorder_stmts(gemmini, gemmini.find("nlb_qkv_conv_cpu(inp, nlb_g_weights, _, _, _); attention_out : _"))
+    gemmini = reorder_stmts(gemmini, gemmini.find("nlb_qkv_conv_cpu(inp, nlb_g_weights, _, _, _); nlb_softmax_cpu(_)"))
+    gemmini = reorder_stmts(gemmini, gemmini.find("nlb_qkv_conv_cpu(inp, nlb_g_weights, _, _, _); attended_output : _"))
+
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv_nofence)
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv_nofence)
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv_nofence)
-    gemmini = fence_after(gemmini, "nlb_qkv_conv_nofence(_) #2")
+    
+    gemmini = fence_after(gemmini, "nlb_qkv_conv_nofence(_) #1") # Fence after phi
+    gemmini = fence_after(gemmini, "nlb_qkv_conv_nofence(_) #2") # Fence after g
+    
     gemmini = call_eqv(gemmini, "matmul_theta_phi_cpu(_)", matmul_theta_phi)
-    gemmini = call_eqv(gemmini, "nlb_softmax_cpu(_)", nlb_softmax)
+    gemmini = call_eqv(gemmini, "nlb_softmax_cpu(_)", nlb_softmax_nofence)
     gemmini = call_eqv(gemmini, "matmul_attention_g_cpu(_)", matmul_attention_g)
     gemmini = call_eqv(gemmini, "nlb_out_conv_cpu(_)", nlb_out_conv)
     gemmini = call_eqv(gemmini, "resadd_relu_cpu(_)", resadd_relu)
