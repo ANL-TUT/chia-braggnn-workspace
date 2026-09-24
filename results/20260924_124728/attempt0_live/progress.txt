@@ -10,3 +10,16 @@ candidate_0007.py: PASSED cycles=43815.0 subpixel_error=0.219 score=1.0309
 candidate_0011.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
 candidate_0012.py: PASSED cycles=42340.0 subpixel_error=0.219 score=1.0668 (new best)
 candidate_0014.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- ValueError: argument 1, 'block_cursor' to reorder_stmts: expected a block of size 2, but got a block of size 1
+candidate_0013.py: PASSED cycles=42340.0 subpixel_error=0.219 score=1.0668
+candidate_0016.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- NameError: name 'unroll_loop' is not defined
+candidate_0017.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- NameError: name 'unroll_loop' is not defined
+candidate_0018.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- NameError: name 'unroll_loop' is not defined
+candidate_0019.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: Cannot fission loop over hwi at /tmp/chia-braggnn-candidate-qjc701un/braggnn_reference.py:545:4.
+candidate_0015.py: PASSED cycles=44333.0 subpixel_error=0.219 score=1.0189
+candidate_0020.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0021.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: find: failed to find matches
+candidate_0022.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0010.py: PASSED cycles=45145.0 subpixel_error=0.219 score=1.0006
+candidate_0023.py: PASSED cycles=45654.0 subpixel_error=0.219 score=0.9894
+candidate_0026.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- NameError: name 'unroll_loop' is not defined
+candidate_0024.py: PASSED cycles=45115.0 subpixel_error=0.219 score=1.0012
