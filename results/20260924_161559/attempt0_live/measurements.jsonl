@@ -1,0 +1,3 @@
+{"sha256": "81fba55829a28d3d72eb481d59dd1aa1c2e46df839264dba26447ed7d79d6b65", "combined_score": 1.0, "cycles": 45170.0, "subpixel_error": 0.219, "failure_stage": null, "build_stage": null, "error": null}
+{"sha256": "87d3822f37bc6dbf3f631b9f8459f45f6dd8becdfb80c9f7703fb3f470c80100", "combined_score": 0.9893985192973234, "cycles": 45654.0, "subpixel_error": 0.219, "failure_stage": null, "build_stage": null, "error": null}
+{"sha256": "b5eb856dfb7c2ff059696c4b6dd32aadf3bd559b06504e2a69c3bb9125cfb070", "combined_score": 1.0188798412018136, "cycles": 44333.0, "subpixel_error": 0.219, "failure_stage": null, "build_stage": null, "error": null}

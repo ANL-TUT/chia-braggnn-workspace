@@ -96,5 +96,55 @@
       0.219,
       0.151
     ]
+  },
+  {
+    "schedule": "results/20260923_213024/attempt0_live/best_braggnn_schedule.py",
+    "lowered": [
+      "conv2",
+      "conv3"
+    ],
+    "marks": [
+      [
+        "conv1",
+        3916
+      ],
+      [
+        "nlb",
+        27285
+      ],
+      [
+        "conv2",
+        12426
+      ],
+      [
+        "conv3",
+        2116
+      ],
+      [
+        "fc1",
+        1456
+      ],
+      [
+        "fc2",
+        286
+      ],
+      [
+        "fc3",
+        275
+      ],
+      [
+        "fc4",
+        275
+      ],
+      [
+        "fc_output",
+        263
+      ]
+    ],
+    "avg_cycles": 48376,
+    "avg_error": [
+      0.219,
+      0.151
+    ]
   }
 ]

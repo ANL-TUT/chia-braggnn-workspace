@@ -1,0 +1,3 @@
+candidate_0001.py: PASSED cycles=45170.0 subpixel_error=0.219 score=1.0000 (new best)
+candidate_0002.py: PASSED cycles=45654.0 subpixel_error=0.219 score=0.9894
+candidate_0003.py: PASSED cycles=44333.0 subpixel_error=0.219 score=1.0189 (new best)

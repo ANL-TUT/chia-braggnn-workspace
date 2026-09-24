@@ -17,3 +17,23 @@
   fc_output                   263    0.6%
   (sum of marks)           47,138
   avg cycles/patch 47198, avg error [0.219, 0.151] px
+== results/20260923_213024/attempt0_live/best_braggnn_schedule.py
+  conv1                     3,905    9.0%
+  nlb_qkv_conv              2,288    5.3%
+  nlb_qkv_conv              2,246    5.2%
+  nlb_qkv_conv              2,256    5.2%
+  fence                        32    0.1%
+  matmul_theta_phi          2,978    6.8%
+  nlb_softmax               8,963   20.6%
+  matmul_attention_g        2,433    5.6%
+  nlb_out_conv              2,824    6.5%
+  resadd_relu               3,773    8.7%
+  conv2                     7,623   17.5%
+  conv3                     1,653    3.8%
+  fc1                       1,456    3.3%
+  fc2                         291    0.7%
+  fc3                         272    0.6%
+  fc4                         270    0.6%
+  fc_output                   264    0.6%
+  (sum of marks)           43,527
+  avg cycles/patch 43585, avg error [0.219, 0.151] px

@@ -73,5 +73,84 @@
       0.219,
       0.151
     ]
+  },
+  {
+    "schedule": "results/20260923_213024/attempt0_live/best_braggnn_schedule.py",
+    "lowered": [],
+    "marks": [
+      [
+        "conv1",
+        3905
+      ],
+      [
+        "nlb_qkv_conv",
+        2288
+      ],
+      [
+        "nlb_qkv_conv",
+        2246
+      ],
+      [
+        "nlb_qkv_conv",
+        2256
+      ],
+      [
+        "fence",
+        32
+      ],
+      [
+        "matmul_theta_phi",
+        2978
+      ],
+      [
+        "nlb_softmax",
+        8963
+      ],
+      [
+        "matmul_attention_g",
+        2433
+      ],
+      [
+        "nlb_out_conv",
+        2824
+      ],
+      [
+        "resadd_relu",
+        3773
+      ],
+      [
+        "conv2",
+        7623
+      ],
+      [
+        "conv3",
+        1653
+      ],
+      [
+        "fc1",
+        1456
+      ],
+      [
+        "fc2",
+        291
+      ],
+      [
+        "fc3",
+        272
+      ],
+      [
+        "fc4",
+        270
+      ],
+      [
+        "fc_output",
+        264
+      ]
+    ],
+    "avg_cycles": 43585,
+    "avg_error": [
+      0.219,
+      0.151
+    ]
   }
 ]

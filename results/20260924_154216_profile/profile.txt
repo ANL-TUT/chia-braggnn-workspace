@@ -22,3 +22,15 @@
   fc_output                   261    0.6%
   (sum of marks)           43,491
   avg cycles/patch 43557, avg error [0.219, 0.151] px
+== results/20260923_213024/attempt0_live/best_braggnn_schedule.py  [lower_conv: conv2+conv3]
+  conv1                     3,916    8.1%
+  nlb                      27,285   56.5%
+  conv2                    12,426   25.7%
+  conv3                     2,116    4.4%
+  fc1                       1,456    3.0%
+  fc2                         286    0.6%
+  fc3                         275    0.6%
+  fc4                         275    0.6%
+  fc_output                   263    0.5%
+  (sum of marks)           48,298
+  avg cycles/patch 48376, avg error [0.219, 0.151] px
