@@ -9,3 +9,30 @@ candidate_0009.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
 candidate_0010.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
 candidate_0012.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- TypeError: multiple procs named do_nlb_qkv_conv
 candidate_0011.py: PASSED cycles=43694.0 subpixel_error=0.219 score=1.0338
+candidate_0013.py: PASSED cycles=43532.0 subpixel_error=0.219 score=1.0376
+candidate_0015.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243
+candidate_0016.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0014.py: PASSED cycles=45076.0 subpixel_error=0.219 score=1.0021
+candidate_0017.py: PASSED cycles=42356.0 subpixel_error=0.219 score=1.0664
+candidate_0019.py: PASSED cycles=43815.0 subpixel_error=0.219 score=1.0309
+candidate_0020.py: PASSED cycles=43815.0 subpixel_error=0.219 score=1.0309
+candidate_0021.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243
+candidate_0022.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0023.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0024.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243
+candidate_0018.py: PASSED cycles=43815.0 subpixel_error=0.219 score=1.0309
+candidate_0026.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0027.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0028.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243
+candidate_0025.py: PASSED cycles=44131.0 subpixel_error=0.219 score=1.0235
+candidate_0030.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0031.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0032.py: PASSED cycles=43815.0 subpixel_error=0.219 score=1.0309
+candidate_0029.py: PASSED cycles=42816.0 subpixel_error=0.219 score=1.0550
+candidate_0034.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0036.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0036.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0037.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: <<<unknown directive>>>: expected the two loops to be fused to come one right after the other. However, the statement after the first loop is:
+candidate_0033.py: PASSED cycles=42646.0 subpixel_error=0.219 score=1.0592
+candidate_0038.py: PASSED cycles=45647.0 subpixel_error=0.219 score=0.9896
+candidate_0040.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- exo.rewrite.new_eff.SchedulingError: find: failed to find matches
