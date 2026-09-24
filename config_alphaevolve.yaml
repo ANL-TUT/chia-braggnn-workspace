@@ -3,7 +3,7 @@
 #
 # Usage:  python chia/braggnn_alphaevolve_loop.py --config config_alphaevolve.yaml
 
-max_iterations: 30        # SW search budget (maps to max_programs_evaluated in the backend)
+max_iterations: 1500        # SW search budget (maps to max_programs_evaluated in the backend)
 log_level: "INFO"
 file_suffix: ".py"
 
@@ -18,7 +18,7 @@ alphaevolve:
   project_id: "GOOGLE_CLOUD_PROJECT"
   engine_id: "GE_APP_ID"
   credentials_file: ""
-  concurrency: 3          # server-side: programs generated in parallel (sweet spot: 3-12)
+  concurrency: 4          # server-side: programs generated in parallel (sweet spot: 3-12)
   num_samplers: 1         # client-side: async tasks polling for new candidates
   num_evaluators: 3       # client-side: async tasks running evaluations concurrently
   idle_timeout_s: 7200    # one evaluation (exocc + build + FireSim infrasetup/runworkload) can exceed 30 min

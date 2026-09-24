@@ -37,9 +37,11 @@ uv run chia job submit --address http://133.15.45.28:8265 --working-dir . -- pyt
 
 # RTL ループ（OpenCode の RTL 編集 → パラメータ調整。各ステップを Verilator で ISA 不変・出力 bit 一致・高速化の
 # 3 条件で採否判定し、不採用は自動で巻き戻す → 採用があれば bitstream ビルド → AlphaEvolve → 結果を OpenCode へ）
+# RTL 編集は反復開始時より --rtl-target（既定 10%）速くなるまで続け、OpenCode の費用が --rtl-budget-usd
+# （既定 $30）に達するか --rtl-steps 回で打ち切ってその時点の設計で先へ進む。1 セッションは 40 ターンまで。
 uv run chia job submit --address <ADDR> --working-dir . \
   --runtime-env-json '{"env_vars": {"RAY_JOB_STOP_WAIT_TIME_S": "120"}}' \
-  -- python src/braggnn_alphaevolve_loop.py --rtl --iterations 2 --rtl-steps 3 --param-steps 2
+  -- python src/braggnn_alphaevolve_loop.py --rtl --iterations 2 --rtl-target 0.10 --rtl-budget-usd 30 --param-steps 2
 ```
 
 どちらも結果は `~/braggnn_loop_runs/<timestamp>/`。残すものは `results/` にコピーしてコミット。
@@ -200,3 +202,62 @@ graph TD
 ```bash
 ./scripts/deploy.sh
 ```
+
+## GCP 構成（`cluster_gcp.yaml`）の注意：FireSim ノード上の OpenCode ツールに届かない
+
+ラップトップを head にして GCP の VM と FireSim ノードを tailnet でつなぐ構成では、
+OpenCode（GCP VM 上の opencode コンテナ）から FireSim ノード上の `chipyard_bash`（MCP ツール）に接続できない。
+opencode のログ（コンテナ内の `~/.local/share/opencode/log/`）に次の警告が出て、ツールなしでモデルが動く。
+LLM 呼び出しは `empty response` や `Requests ending with a model turn are not supported` で失敗する。
+
+```
+level=WARN message="server unavailable" key=chipyard_bash type=remote status=failed
+```
+
+### 原因
+
+```
+ ① FireSim 実行・Verilator・ビルド（Ray タスク）：届く
+ ドライバ / evaluator ──gRPC──▶ CONNECT proxy ──tailnet──▶ 100.120.29.63:<Ray port>
+                                                            Ray は 0.0.0.0 で待受 ✔
+
+ ② OpenCode → chipyard_bash（Ray の外の HTTP）：届かない
+ opencode CLI (GCP VM) ── http://127.0.0.2:24016 ──▶ GCP VM の chia relay
+     ──SOCKS/tailnet──▶ FireSim ノードの 100.120.29.63:24016
+                          ✘ 誰も待受していない（chipyard_bash は 127.0.0.2:24016 だけ）
+```
+
+- Ray（raylet / worker）は `0.0.0.0` で待ち受けるので、tailnet の IP 宛てでも届く。
+- ChiaTool（MCP）はノードの advertise IP（FireSim ノードでは `127.0.0.2`）だけで待ち受ける。
+  chia は tailnet 経由で届いた接続を `127.0.0.1` で受けて advertise IP に渡す bridge を用意するが、
+  それは chia が userspace tailscaled を動かすノードの前提。
+- FireSim ノードは自前のカーネルモード tailscale（`tailscale0` = `100.120.29.63`）なので、
+  接続が tailnet の IP にそのまま届き、最後の区間がない。
+- オンプレの `cluster.yaml` は tailnet を使わず実 IP でつなぐので、この問題は起きない。
+
+### 回避策（FireSim ノードで実行）
+
+tailnet の IP で受けた接続を、ツールのアドレスに転送する中継を、ツール用ポート範囲の全体に張る。
+
+```bash
+# ツール用ポート範囲と advertise IP を確認（例: 24016〜24026, 127.0.0.2）
+cat /proc/$(pgrep -f raylet | head -1)/environ | tr '\0' '\n' \
+  | grep -E 'CHIA_TOOL_(BASE_PORT|MAX_PORT|ADVERTISE_HOST)='
+
+# その範囲の全ポートに中継を張る（socat がなければ先にインストール）
+for p in $(seq 24016 24026); do
+  nohup socat TCP-LISTEN:$p,bind=100.120.29.63,fork,reuseaddr TCP:127.0.0.2:$p >/dev/null 2>&1 &
+done
+ss -ltn | grep -c "100.120.29.63:240[12][0-9]"   # 張ったポート数（例では 11）
+```
+
+確認：ループで OpenCode のステップが動いている間に、GCP VM から次を実行し `000` 以外が返れば届いている。
+
+```bash
+curl -s -m5 -o /dev/null -w '%{http_code}\n' http://127.0.0.2:24016/
+```
+
+- 手動で張った中継なので、FireSim ノードの再起動や `chia up` のやり直しで消える。
+  ポート範囲が変わることもあるので、そのたびに範囲を確認して張り直す。
+- 恒久対策は chia 側の修正（自前 tailscale のノードでも tailnet IP → advertise IP の bridge を置く、
+  またはツールを `0.0.0.0` で待ち受けさせる）。

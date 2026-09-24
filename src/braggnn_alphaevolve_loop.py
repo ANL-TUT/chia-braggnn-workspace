@@ -36,6 +36,9 @@ from constants import (
     CHIPYARD_WRITABLE_DIRS,
     DEFAULT_OUTPUT_BASE,
     MAX_ATTEMPTS,
+    RTL_BUDGET_USD,
+    RTL_MAX_STEPS,
+    RTL_TARGET_IMPROVEMENT,
 )
 from dumper import Dumper, dump_llm
 from firesim import (
@@ -43,6 +46,7 @@ from firesim import (
     collect_chisel_diff,
     firesim_buildbitstream_mock,
     read_gemmini_params_h,
+    require_working_sandbox,
     start_bitstream_build,
 )
 from exo_compiler import check_exo_compatible
@@ -187,6 +191,7 @@ def _run_hw_flow(
             task_options={"resources": {"manager": 1}},
         )
 
+    require_working_sandbox(CHIPYARD_PATH, CHIPYARD_WRITABLE_DIRS)
     chipyard_bash = _new_chipyard_bash()
 
     logger.info("Creating LLM Node")
@@ -508,8 +513,19 @@ def main() -> None:
              "--iterations sets the hardware iterations",
     )
     parser.add_argument(
-        "--rtl-steps", type=int, default=3,
-        help="--rtl only: RTL edits tried per hardware iteration",
+        "--rtl-steps", type=int, default=RTL_MAX_STEPS,
+        help="--rtl only: at most this many RTL edits per hardware iteration "
+             "(a backstop; the goal and the budget below normally end the phase)",
+    )
+    parser.add_argument(
+        "--rtl-target", type=float, default=RTL_TARGET_IMPROVEMENT,
+        help="--rtl only: keep asking for RTL edits until the accepted design is "
+             "this fraction faster on Verilator than at the start of the iteration",
+    )
+    parser.add_argument(
+        "--rtl-budget-usd", type=float, default=RTL_BUDGET_USD,
+        help="--rtl only: stop the RTL phase once its OpenCode sessions have cost "
+             "this much, and go on with whatever was accepted",
     )
     parser.add_argument(
         "--param-steps", type=int, default=2,
@@ -536,6 +552,8 @@ def main() -> None:
             iterations=args.iterations,
             rtl_iterations=args.rtl_steps,
             param_iterations=args.param_steps,
+            rtl_target=args.rtl_target,
+            rtl_budget_usd=args.rtl_budget_usd,
             config_path=args.config,
             n_patches=args.verilator_patches,
             mock_bitstream=args.mock_bitstream,

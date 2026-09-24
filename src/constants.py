@@ -21,12 +21,23 @@ EXO_DIR = _REPO_ROOT / "exo"
 # ---------------------------------------------------------------------------
 # LLM (HW-loop implement/debug agent)
 # ---------------------------------------------------------------------------
-OPENCODE_MODEL = "google-vertex/gemini-3.8-flash"
+OPENCODE_MODEL = "google-vertex/gemini-3.1-pro-preview-customtools"
 LLM_SYSTEM_MESSAGE = (
     "You are an expert Chisel / RISC-V engineer specializing in RoCC "
     "accelerators for the Chipyard / Rocket / Gemmini ecosystem."
 )
 LLM_TIMEOUT_SECONDS = 3600
+# Tool-call turns per OpenCode session (opencode's agent `steps`); at the limit
+# the model must stop and summarize, and the edits made so far are evaluated.
+OPENCODE_MAX_STEPS = 40
+
+# --rtl loop, RTL phase: keep asking for edits until the accepted design is
+# this much faster than at the start of the iteration, or the phase has spent
+# this much on the LLM (or made RTL_MAX_STEPS attempts, as a backstop), then
+# go on with whatever was accepted.
+RTL_TARGET_IMPROVEMENT = 0.10
+RTL_BUDGET_USD = 30.0
+RTL_MAX_STEPS = 20
 
 # ---------------------------------------------------------------------------
 # Output
@@ -55,8 +66,13 @@ CHIPYARD_DIFF_SUBMODULES = [
 # ---------------------------------------------------------------------------
 CHIPYARD_PATH = os.environ.get("CHIPYARD_PATH", "/home/ishibehouku/chia-experiments/chipyard")
 
+# Scratch dir for the HW LLM's helper scripts; created on demand. /tmp in the
+# sandbox is a per-command tmpfs, so it cannot hold them.
+CHIPYARD_SCRATCH_DIR = f"{CHIPYARD_PATH}/tmp"
+
 CHIPYARD_WRITABLE_DIRS = [
     f"{CHIPYARD_PATH}/generators/gemmini",
+    CHIPYARD_SCRATCH_DIR,
     f"{CHIPYARD_PATH}/sims/firesim",
     f"{CHIPYARD_PATH}/software/firemarshal",
 ]

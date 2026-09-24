@@ -5,13 +5,18 @@ Each outer iteration:
   1. Baseline: Verilator run of the currently accepted design with the fixed
      schedules (verilator_eval: the seed, the best schedule so far, the fusion
      reference).
-  2. RTL phase (rtl_iterations steps): OpenCode makes one microarchitecture
-     change, verilator_eval checks it (ISA unchanged, predictions bit-identical
-     to the seed) and times it. A passing, faster change is accepted (the
-     Gemmini sources are snapshotted); anything else is reverted to the last
-     accepted snapshot, and OpenCode gets the reason either way.
+  2. RTL phase: OpenCode makes one microarchitecture change per step,
+     verilator_eval checks it (ISA unchanged, predictions bit-identical to the
+     seed) and times it. A passing, faster change is accepted (the Gemmini
+     sources are snapshotted); anything else is reverted to the last accepted
+     snapshot, and OpenCode gets the reason either way. Steps go on until the
+     accepted design is rtl_target (10%) faster than the baseline, or the
+     phase has spent rtl_budget_usd on the LLM, or after rtl_iterations steps;
+     the loop then continues with whatever was accepted.
   3. Parameter phase (param_iterations steps): the same, for Configs.scala.
-  4. If anything was accepted: FireSim bitstream build, then AlphaEvolve
+  4. Unless at least one RTL change was accepted (parameter-only changes do
+     not count) and the sources really differ from the start of the
+     iteration, the loop fails here. Otherwise: FireSim bitstream build, then AlphaEvolve
      searches schedules on it (config_alphaevolve.yaml's max_iterations). Its
      best schedule seeds the next search and the next Verilator runs, and its
      numbers go back to OpenCode in the next iteration.
@@ -33,13 +38,21 @@ from chia.base.ChiaFunction import get
 
 from alphaevolve_flow import DEFAULT_CONFIG, SEED_PROGRAM, run_alphaevolve_search
 from chipyard_ops import restore_repos, snapshot_repos
-from constants import CHIPYARD_PATH, CHIPYARD_WRITABLE_DIRS, DEFAULT_OUTPUT_BASE
+from constants import (
+    CHIPYARD_PATH,
+    CHIPYARD_WRITABLE_DIRS,
+    DEFAULT_OUTPUT_BASE,
+    RTL_BUDGET_USD,
+    RTL_MAX_STEPS,
+    RTL_TARGET_IMPROVEMENT,
+)
 from dumper import Dumper, dump_llm
 from exo_compiler import check_exo_compatible
 from firesim import (
     SandboxedBashTool,
     firesim_buildbitstream_mock,
     read_gemmini_params_h,
+    require_working_sandbox,
     start_bitstream_build,
 )
 from llm import make_llm, param_tune, rtl_edit
@@ -102,6 +115,7 @@ class _State:
     best_source: Optional[str] = None        # best AlphaEvolve schedule, None = the seed
     best_cycles: float = float("inf")        # Verilator cycles of the accepted design
     baseline_cycles: float = float("inf")    # ... at the start of this iteration
+    target_cycles: Optional[float] = None    # RTL phase goal for this iteration
     accepted_notes: list = field(default_factory=list)   # this iteration's accepted changes
     earlier_notes: list = field(default_factory=list)    # ... of earlier iterations that were built
     last_step: str = ""                      # result of the previous LLM step
@@ -118,9 +132,16 @@ def _context(state: _State, outer: int, phase: str, step: int, steps: int) -> st
     earlier = "\n".join(f"- {n}" for n in state.earlier_notes) or "(none)"
     return (
         f"## Where the loop is\n\n"
-        f"Hardware iteration {outer + 1}, {phase} step {step + 1} of {steps}.\n"
+        f"Hardware iteration {outer + 1}, {phase} step {step + 1} (at most {steps}).\n"
         f"Verilator mean cycles/patch: {state.baseline_cycles:,.0f} at the start of "
-        f"this iteration, {state.best_cycles:,.0f} for the design in the tree now.\n\n"
+        f"this iteration, {state.best_cycles:,.0f} for the design in the tree now.\n"
+        + (f"Goal of the RTL phase: {state.target_cycles:,.0f} or fewer "
+           f"({1 - state.target_cycles / state.baseline_cycles:.0%} below the start "
+           "of this iteration); "
+           "RTL steps continue until it is reached or the budget runs out, so "
+           "aim for changes with a large effect rather than cycle-level tweaks.\n"
+           if phase == "rtl" and state.target_cycles else "")
+        + "\n"
         f"Changes accepted and built in earlier iterations (in the tree now):\n{earlier}\n\n"
         f"Changes accepted in this iteration (they are in the tree now):\n{notes}\n\n"
         f"Result of your previous step:\n{state.last_step or '(none yet)'}\n\n"
@@ -129,16 +150,40 @@ def _context(state: _State, outer: int, phase: str, step: int, steps: int) -> st
     )
 
 
-def _improve(state: _State, outer: int, phase: str, ask: Callable, steps: int) -> None:
-    """Up to *steps* LLM edits, each kept only if Verilator accepts it."""
+def _improve(state: _State, outer: int, phase: str, ask: Callable, steps: int,
+             target_cycles: Optional[float] = None,
+             budget_usd: Optional[float] = None) -> int:
+    """Up to *steps* LLM edits, each kept only if Verilator accepts it. Stops
+    early once the accepted design reaches *target_cycles* or the LLM calls
+    have cost *budget_usd*. Returns how many were accepted."""
+    accepted = 0
+    spent = 0.0
     for step in range(steps):
+        if target_cycles is not None and state.best_cycles <= target_cycles:
+            state.log(f"[{phase} {outer + 1}] goal reached: {state.best_cycles:,.0f} "
+                      f"<= {target_cycles:,.0f} cycles/patch after {step} steps "
+                      f"(${spent:.2f})")
+            break
+        if budget_usd is not None and spent >= budget_usd:
+            state.log(f"[{phase} {outer + 1}] budget used up: ${spent:.2f} of "
+                      f"${budget_usd:.2f} after {step} steps; going on at "
+                      f"{state.best_cycles:,.0f} cycles/patch (goal "
+                      f"{target_cycles:,.0f})" if target_cycles is not None else
+                      f"[{phase} {outer + 1}] budget used up: ${spent:.2f} after {step} steps")
+            break
         label = f"{phase} {outer + 1}.{step + 1}"
         bash = _new_bash()
         reply, error = "", None
         try:
             impl = ask(state.llm, bash, _context(state, outer, phase, step, steps))
             dump_llm(state.dump, f"{phase}_o{outer}_s{step}", impl)
+            spent += float((getattr(impl, "usage", None) or {}).get("cost_usd") or 0)
             reply = impl.result or ""
+            # OpenCodeLLM returns success=False, not an exception, once its own
+            # retries are used up (e.g. repeated "empty response").
+            if not getattr(impl, "success", True):
+                error = ("the LLM returned no usable result: "
+                         + _tail(getattr(impl, "stderr", "") or reply or "(no output)", 500))
         except Exception as e:  # noqa: BLE001 -- an LLM/API error must not end a long run
             error = f"{type(e).__name__}: {e}"
         finally:
@@ -150,6 +195,13 @@ def _improve(state: _State, outer: int, phase: str, ask: Callable, steps: int) -
             state.log(f"[{label}] LLM call failed: {error}")
             continue
 
+        # A step that changed nothing needs no Verilator build and run.
+        if _snapshot() == state.accepted_snap:
+            state.last_step = ("You did not change any Gemmini source, so there was "
+                               "nothing to evaluate. Make an actual edit this time.")
+            state.log(f"[{label}] no change to the Gemmini sources; skipped")
+            continue
+
         result = evaluate_rtl(best_source=state.best_source, n_patches=state.n_patches,
                               isa_reference=state.isa_reference)
         cycles = verilator_cycles(result)
@@ -159,6 +211,7 @@ def _improve(state: _State, outer: int, phase: str, ask: Callable, steps: int) -
             state.accepted_snap = _snapshot()
             state.best_cycles = cycles
             state.accepted_notes.append(f"{label}: {_tail(reply, 600)}")
+            accepted += 1
             (state.out / f"accepted_{phase}_o{outer}_s{step}.diff").write_text(
                 _snapshot_diff(state.accepted_snap))
         else:
@@ -169,13 +222,23 @@ def _improve(state: _State, outer: int, phase: str, ask: Callable, steps: int) -
             verdict = f"REJECTED and reverted: {why}."
         state.last_step = f"{result.summary()}\n{verdict}"
         state.log(f"[{label}] {verdict}\n{result.summary()}")
+    else:
+        if target_cycles is not None:
+            state.log(f"[{phase} {outer + 1}] {steps} steps done (${spent:.2f}); "
+                      + ("goal reached: " if state.best_cycles <= target_cycles
+                         else "going on at ")
+                      + f"{state.best_cycles:,.0f} cycles/patch (goal "
+                      f"{target_cycles:,.0f})")
+    return accepted
 
 
 def run_rtl_flow(
     output_dir: str,
     iterations: int = 1,
-    rtl_iterations: int = 3,
+    rtl_iterations: int = RTL_MAX_STEPS,
     param_iterations: int = 2,
+    rtl_target: float = RTL_TARGET_IMPROVEMENT,
+    rtl_budget_usd: float = RTL_BUDGET_USD,
     config_path: str = DEFAULT_CONFIG,
     n_patches: int = DEFAULT_PATCHES,
     mock_bitstream: bool = False,
@@ -188,6 +251,7 @@ def run_rtl_flow(
     dump = Dumper(output_dir)
     logger.info("Output directory: %s", output_dir)
 
+    require_working_sandbox(CHIPYARD_PATH, CHIPYARD_WRITABLE_DIRS)
     bash = _new_bash()
     llm = make_llm(bash)
     bash.stop()
@@ -214,16 +278,24 @@ def run_rtl_flow(
                 f"can be judged:\n{baseline.summary()}\n{_tail(baseline.sim_build_log_tail, 1500)}")
         state.baseline_cycles = state.best_cycles = verilator_cycles(baseline)
 
-        _improve(state, outer, "rtl", rtl_edit, rtl_iterations)
+        state.target_cycles = state.baseline_cycles * (1 - rtl_target)
+        rtl_accepted = _improve(state, outer, "rtl", rtl_edit, rtl_iterations,
+                                target_cycles=state.target_cycles,
+                                budget_usd=rtl_budget_usd)
         _improve(state, outer, "param", param_tune, param_iterations)
         _restore(state.accepted_snap)
 
-        if state.accepted_snap is iteration_snap:
-            state.firesim_feedback = (
-                f"Hardware iteration {outer + 1} accepted no change, so no bitstream "
-                "was built; the hardware is the same as before.")
-            state.log(f"[iteration {outer + 1}] no accepted change; skipping FireSim")
-            continue
+        # Only hardware that carries at least one accepted RTL change goes on to
+        # a (hours-long) bitstream build. Anything else is a failed run: stop,
+        # rather than rebuild the baseline or a parameter-only variant of it.
+        if rtl_accepted == 0 or _snapshot() == iteration_snap:
+            reason = ("no RTL change was accepted" if rtl_accepted == 0 else
+                      "the Gemmini sources are unchanged from the start of the iteration")
+            state.log(f"[iteration {outer + 1}] FAILED: {reason}; not building a bitstream")
+            raise RuntimeError(
+                f"hardware iteration {outer + 1}: {reason} (see "
+                f"{state.out / 'rtl_steps.txt'}), so there is no new hardware to "
+                "build; stopping the RTL loop")
 
         hw_summary = "\n".join(state.accepted_notes)
         bitstream_ref = (firesim_buildbitstream_mock.chia_remote() if mock_bitstream

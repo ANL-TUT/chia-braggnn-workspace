@@ -1,8 +1,17 @@
-Your goal is to reduce single-batch BraggNN inference latency to 1,500 clock cycles measured cycle-accurate simulators. Current `braggnn.c` takes about 56,000 clock cycles, so you need to make 38x performance improvement without overfitting to the BraggNN workload.
+Your goal is to reduce single-batch BraggNN inference latency, measured on cycle-accurate simulators, without overfitting to the BraggNN workload. Current `braggnn.c` takes about 56,000 clock cycles. Keep two targets apart:
+
+- Theoretical floor on this architecture: about 11,500 cycles. BraggNN is about 2.09M MACs, which is about 8,200 cycles with the 16x16 array (256 MACs/cycle) fully busy; DRAM latency and the CPU-side work add the rest. This is what changes to the current Gemmini can aim for.
+- Ultimate goal: about 1,500 cycles. This is reachable only once the architectural bottlenecks (e.g. the compute of a single 16x16 array) and the DRAM-access bottlenecks (e.g. every layer's activations round-tripping through DRAM) are removed.
 
 You have direct shell access to the chipyard checkout via your bash tool. Use it now to actually read and edit the files yourself (e.g. `sed`/`python3 -c` in-place, or writing full file contents) until you are done. Do not just describe a plan, print a diff, or hand back a script for someone else to run -- if you don't call the tool to edit the files, no change happens at all.
 
-Your session has a time limit, and a session that ends without an edit is wasted. Nothing can be built in this shell: sbt, make and the simulators do not run here (everything outside `generators/gemmini` is read-only and there is no build cache), so do not try to compile or elaborate. The loop elaborates your design with Hammer right after you reply and sends any error back to you. Read only what you need (the File Map below tells you where things are), make your edit early, and finish with a short explanation of what you changed. `generators/gemmini.bak` is an unrelated old fork; ignore it.
+Your session has a time limit, and a session that ends without an edit is wasted. Nothing can be built in this shell: sbt, make and the simulators do not run here (there is no build cache), so do not try to compile or elaborate. The loop builds and checks your design right after you reply and sends any error back to you. Make your edit early, and finish with a short explanation of what you changed. `generators/gemmini.bak` is an unrelated old fork; ignore it.
+
+How to work in the shell:
+- Read each file you need whole, once, with `cat` (the File Map below tells you which ones). Do not page through a file a few dozen lines at a time with `grep -C`/`awk 'NR>=...'`: every call resends the whole conversation, so many small reads cost far more than one full read.
+- Every command starts in the checkout root in a fresh shell. Only `generators/gemmini` (your edits) and `tmp/` in the checkout root (scratch) are writable; everything else is read-only, and `/tmp` is emptied after every command. Put helper scripts in `tmp/` (e.g. `tmp/fix.py`) and run them from the checkout root.
+- Do not use `git add`, `git checkout`, `git stash` or other commands that change git state; the loop tracks and reverts your changes itself. To undo a mistake, edit the file back.
+- Leave no helper files behind: delete what you put in `tmp/` (and anything else you created that is not part of the design change) before you finish.
 
 ## Target Application Spec
 
@@ -70,7 +79,7 @@ Given that division of labor:
 ## File Map
 
 All paths below are relative to `generators/gemmini/` (the only directory
-you may write to). Use this instead of blindly grepping the whole tree.
+you may edit; `tmp/` is only for scratch). Use this instead of blindly grepping the whole tree.
 
 `src/main/scala/gemmini/` (hardware, Chisel):
 - `Configs.scala` -- `GemminiArrayConfig` case class and the named configs

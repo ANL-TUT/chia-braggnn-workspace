@@ -18,6 +18,7 @@ from chipyard_ops import collect_diff
 from constants import (
     CHIPYARD_DIFF_SUBMODULES,
     CHIPYARD_PATH,
+    CHIPYARD_SCRATCH_DIR,
     FIRESIM_BUILD_TIMEOUT_SECONDS,
     FIRESIM_CONFIG_HWDB_PATH,
     FIRESIM_CONFIG_RUNTIME_PATH,
@@ -119,6 +120,55 @@ def run_workload(elf: bytes, timeout_seconds: int = 14400) -> RunResult:
 _SANDBOX_RO_SYSTEM_DIRS = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt"]
 
 
+def sandbox_command(work_dir: str, writable_dirs: list[str], command: str) -> list[str]:
+    """The bwrap command line that runs `command` in the chipyard_bash sandbox."""
+    cmd = ["bwrap", "--die-with-parent", "--dev", "/dev",
+           "--proc", "/proc", "--tmpfs", "/tmp"]
+    for d in _SANDBOX_RO_SYSTEM_DIRS:
+        if os.path.isdir(d):
+            cmd += ["--ro-bind", d, d]
+    cmd += ["--ro-bind", work_dir, work_dir]
+    # Bind at the real path: a writable dir may be a symlink out of
+    # work_dir (e.g. generators/gemmini -> ~/gemmini4xraymodels), and the
+    # link, visible through the ro-bind above, must resolve in the sandbox.
+    for d in writable_dirs:
+        if d == CHIPYARD_SCRATCH_DIR:
+            os.makedirs(d, exist_ok=True)  # bwrap needs the source to exist
+        real = os.path.realpath(d)
+        cmd += ["--bind", real, real]
+    cmd += ["--chdir", work_dir, "sh", "-c", command]
+    return cmd
+
+
+@ChiaFunction(resources={"manager": 0.05})
+def check_sandbox(work_dir: str, writable_dirs: list[str]) -> Optional[str]:
+    """Run a probe through the chipyard_bash sandbox on the firesim node: it
+    must start, read work_dir and write every writable dir (by the path the
+    LLM uses). Returns None when it works, else what failed."""
+    probe = "ls >/dev/null"
+    for d in writable_dirs:
+        f = f"{d}/.chia_sandbox_probe"
+        probe += f" && touch '{f}' && rm -f '{f}'"
+    try:
+        proc = subprocess.run(sandbox_command(work_dir, writable_dirs, probe),
+                              capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+    if proc.returncode == 0:
+        return None
+    return (f"exit code {proc.returncode}\n{proc.stdout}{proc.stderr}").strip()
+
+
+def require_working_sandbox(work_dir: str, writable_dirs: list[str]) -> None:
+    """Stop before any LLM call if the LLM's shell tool cannot work: every
+    session would end without an edit and be wasted."""
+    error = get(check_sandbox.chia_remote(work_dir, writable_dirs))
+    if error:
+        raise RuntimeError(
+            "the chipyard_bash sandbox (bwrap) does not work on the firesim "
+            f"node, so the LLM could not read or edit anything:\n{error}")
+
+
 class SandboxedBashTool(BashTool):
     """chipyard_bash, confined with bubblewrap: nothing outside work_dir is
     visible, and only writable_dirs (under work_dir) are writable -- the
@@ -133,16 +183,7 @@ class SandboxedBashTool(BashTool):
                           task_options=task_options)
 
     def run_command(self, command: str) -> str:
-        bwrap_cmd = ["bwrap", "--die-with-parent", "--dev", "/dev",
-                     "--proc", "/proc", "--tmpfs", "/tmp"]
-        for d in _SANDBOX_RO_SYSTEM_DIRS:
-            if os.path.isdir(d):
-                bwrap_cmd += ["--ro-bind", d, d]
-        bwrap_cmd += ["--ro-bind", self.work_dir, self.work_dir]
-        for d in self.writable_dirs:
-            bwrap_cmd += ["--bind", d, d]
-        bwrap_cmd += ["--chdir", self.work_dir]
-        bwrap_cmd += ["sh", "-c", command]
+        bwrap_cmd = sandbox_command(self.work_dir, self.writable_dirs, command)
 
         try:
             proc = subprocess.Popen(

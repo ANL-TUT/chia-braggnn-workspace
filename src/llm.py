@@ -6,7 +6,12 @@ from chia.base.llm_call import QueryResult
 from chia.base.tools.BashTool import BashTool
 from chia.models.opencode import AdditionalModelProvider, OpenCodeLLM
 
-from constants import LLM_SYSTEM_MESSAGE, LLM_TIMEOUT_SECONDS, OPENCODE_MODEL
+from constants import (
+    LLM_SYSTEM_MESSAGE,
+    LLM_TIMEOUT_SECONDS,
+    OPENCODE_MAX_STEPS,
+    OPENCODE_MODEL,
+)
 from prompts import (
     _DEBUGGER_PREAMBLE, _GEMMINI_TUNE, _OPTIMIZER_PREAMBLE, _PARAM_PHASE, _RTL_PHASE,
 )
@@ -35,6 +40,16 @@ def gemini_vertex_provider(model: str = OPENCODE_MODEL) -> AdditionalModelProvid
     )
 
 
+class _StepLimitedOpenCodeLLM(OpenCodeLLM):
+    """OpenCodeLLM whose agent stops after OPENCODE_MAX_STEPS tool-call turns
+    (then summarizes), so one session's cost is bounded."""
+
+    def _build_config(self, tools):
+        cfg = super()._build_config(tools)
+        cfg["agent"][self.agent_name]["steps"] = OPENCODE_MAX_STEPS
+        return cfg
+
+
 def make_llm(chipyard_bash: BashTool):
     """Build the implement/debug LLM ONCE, to be reused across the whole loop.
 
@@ -48,7 +63,7 @@ def make_llm(chipyard_bash: BashTool):
     development — each OpenCode call is independent — so reuse is just a
     convenience there; the failure context is re-supplied inline regardless.)
     """
-    return OpenCodeLLM(
+    return _StepLimitedOpenCodeLLM(
         model=OPENCODE_MODEL,
         system_message=LLM_SYSTEM_MESSAGE,
         timeout_seconds=LLM_TIMEOUT_SECONDS,
