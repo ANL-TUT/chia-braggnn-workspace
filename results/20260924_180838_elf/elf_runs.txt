@@ -1,0 +1,21 @@
+== /var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-base/braggnn.riscv
+  avg cycles/patch 44,803  avg error [0.219, 0.151] px  patches differing from the first ELF: 0/10
+== /var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-base-marks/braggnn.riscv
+  avg cycles/patch 42,436  avg error [0.219, 0.151] px  patches differing from the first ELF: 0/10
+    conv1               4,465
+    nlb_qkv             6,170
+    theta_phi           2,893
+    softmax             8,979
+    attention_g         2,326
+    nlb_out_conv        2,433
+    resadd              2,996
+    conv2               7,542
+    conv3               1,615
+    fc1                 2,112
+    fc2..output           847
+== /var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-flatten/braggnn.riscv
+  avg cycles/patch 40,543  avg error [0.219, 0.151] px  patches differing from the first ELF: 0/10
+== /var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-softmax/braggnn.riscv
+  avg cycles/patch 42,937  avg error [0.219, 0.151] px  patches differing from the first ELF: 0/10
+== /var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-tail/braggnn.riscv
+  avg cycles/patch 47,305  avg error [0.219, 0.151] px  patches differing from the first ELF: 0/10
