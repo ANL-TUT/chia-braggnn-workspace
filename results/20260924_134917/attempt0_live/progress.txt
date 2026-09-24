@@ -1,1 +1,11 @@
 candidate_0001.py: PASSED cycles=45170.0 subpixel_error=0.219 score=1.0000 (new best)
+candidate_0003.py: PASSED cycles=42840.0 subpixel_error=0.219 score=1.0544 (new best)
+candidate_0004.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243
+candidate_0006.py: PASSED cycles=44097.0 subpixel_error=0.219 score=1.0243
+candidate_0005.py: PASSED cycles=43815.0 subpixel_error=0.219 score=1.0309
+candidate_0008.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- TypeError: multiple procs named do_nlb_qkv_conv
+candidate_0007.py: PASSED cycles=41275.0 subpixel_error=0.219 score=1.0944 (new best)
+candidate_0009.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0010.py: PASSED cycles=42565.0 subpixel_error=0.219 score=1.0612
+candidate_0012.py: FAILED at build cycles=None subpixel_error=None score=0.0000 -- TypeError: multiple procs named do_nlb_qkv_conv
+candidate_0011.py: PASSED cycles=43694.0 subpixel_error=0.219 score=1.0338

@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "/home/ray/anaconda3/bin/exocc", line 8, in <module>
+    sys.exit(main())
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 140, in main
+    exocc(*sys.argv[1:], name=Path(sys.argv[0]).name)
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 90, in exocc
+    exo.compile_procs(library, outdir, f"{args.stem}.c", f"{args.stem}.h")
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/API.py", line 145, in compile_procs
+    c_data, h_data = compile_procs_to_strings(proc_list, h_file)
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/API.py", line 153, in compile_procs_to_strings
+    return run_compile([p._loopir_proc for p in proc_list], h_file_name)
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/backend/LoopIR_compiler.py", line 326, in run_compile
+    fwd_decls, body = compile_to_strings(lib_name, proc_list)
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/backend/LoopIR_compiler.py", line 391, in compile_to_strings
+    raise TypeError(f"multiple procs named {p.name}")
+TypeError: multiple procs named do_nlb_qkv_conv

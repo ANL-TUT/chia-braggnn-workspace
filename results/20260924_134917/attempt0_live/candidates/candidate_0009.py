@@ -78,9 +78,6 @@ from gemmini import (
 )
 
 # EVOLVE-BLOCK-START
-NLB_ROW_TILE = 8
-
-
 def fence_after(p, pattern):
     return insert_noop_call(p, p.find(pattern).after(), fence, [])
 
@@ -224,11 +221,25 @@ def schedule_eval():
     gemmini = rename(braggnn_eval_cpu, "braggnn_eval")
     gemmini = call_eqv(gemmini, "braggnn_inference_cpu(_)", braggnn_inference)
     gemmini = inline(gemmini, "braggnn_inference(_)")
+
+    # Optimize CPU loop overhead inside the timed patch loop:
+    # 1. Unroll the output copy loop
+    gemmini = unroll_loop(gemmini, "k")
+
+    # 2. Unroll the input patch copying loops
+    gemmini = unroll_loop(gemmini, "icol")
+    gemmini = unroll_loop(gemmini, "irow")
+
+    # 3. Unroll input quantization loops
     gemmini = unroll_loop(gemmini, "w")
     gemmini = unroll_loop(gemmini, "h")
+
+    # 4. Unroll flattening loops
     gemmini = unroll_loop(gemmini, "c")
     gemmini = unroll_loop(gemmini, "r")
-    gemmini = unroll_loop(gemmini, "k")
+    gemmini = divide_loop(gemmini, "ch", 4, ["ch_o", "ch_i"], perfect=True)
+    gemmini = unroll_loop(gemmini, "ch_i")
+
     return gemmini
 
 

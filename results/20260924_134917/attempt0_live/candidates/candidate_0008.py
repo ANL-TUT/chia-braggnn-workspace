@@ -102,7 +102,7 @@ def sched_conv_nofence(cpu, in_dim, in_ch, out_ch, k, act=False):
 
     do_conv = make_loop_conv_ws(f"do_{name}", in_dim, in_ch, out_ch, k, act)
 
-    gemmini = rename(cpu, name)
+    gemmini = rename(cpu, name + "_nofence")
     gemmini = replace(gemmini, "for orow in _:_", do_conv)
 
     return gemmini
@@ -171,7 +171,8 @@ def sched_resadd(cpu):
 conv1 = sched_conv(conv1_cpu, INPUT_DIM, 1, CONV1_FILTERS, 3)
 conv2 = sched_conv(conv2_cpu, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 3, act=True)
 conv3 = sched_conv(conv3_cpu, CONV2_DIM, CONV2_FILTERS, CONV3_FILTERS, 3, act=True)
-nlb_qkv_conv = sched_conv_nofence(nlb_qkv_conv_cpu, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 1)
+nlb_qkv_conv = sched_conv(nlb_qkv_conv_cpu, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 1)
+nlb_qkv_conv_nofence = sched_conv_nofence(nlb_qkv_conv_cpu, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 1)
 nlb_out_conv = sched_conv(nlb_out_conv_cpu, CONV1_DIM, CONV2_FILTERS, CONV1_FILTERS, 1)
 
 fc1 = sched_fc(fc1_cpu, CONV3_FILTERS, CONV3_DIM, CONV3_DIM, FC1_UNITS, act=True)
@@ -188,10 +189,9 @@ resadd_relu = sched_resadd(resadd_relu_cpu)
 
 def schedule_nlb():
     gemmini = rename(nlb_cpu, "nlb")
+    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv_nofence)
+    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv_nofence)
     gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
-    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
-    gemmini = call_eqv(gemmini, "nlb_qkv_conv_cpu(_) #0", nlb_qkv_conv)
-    gemmini = insert_noop_call(gemmini, gemmini.find("matmul_theta_phi_cpu(_)").before(), fence, [])
     gemmini = call_eqv(gemmini, "matmul_theta_phi_cpu(_)", matmul_theta_phi)
     gemmini = call_eqv(gemmini, "nlb_softmax_cpu(_)", nlb_softmax)
     gemmini = call_eqv(gemmini, "matmul_attention_g_cpu(_)", matmul_attention_g)
@@ -224,11 +224,21 @@ def schedule_eval():
     gemmini = rename(braggnn_eval_cpu, "braggnn_eval")
     gemmini = call_eqv(gemmini, "braggnn_inference_cpu(_)", braggnn_inference)
     gemmini = inline(gemmini, "braggnn_inference(_)")
+
+    # Unroll CPU-side copy and quantization loops
+    gemmini = unroll_loop(gemmini, "icol")
+    gemmini = unroll_loop(gemmini, "irow")
     gemmini = unroll_loop(gemmini, "w")
     gemmini = unroll_loop(gemmini, "h")
+
+    # Unroll CPU-side NCHW flatten loops
     gemmini = unroll_loop(gemmini, "c")
     gemmini = unroll_loop(gemmini, "r")
+    gemmini = unroll_loop(gemmini, "ch")
+
+    # Unroll CPU-side output copy loop
     gemmini = unroll_loop(gemmini, "k")
+
     return gemmini
 
 
