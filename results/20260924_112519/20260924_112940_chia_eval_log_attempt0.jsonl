@@ -1,0 +1,1 @@
+{"timestamp": 1790267380.442372, "program_id": "", "build": {"success": true, "stdout_tail": "", "binary_size": 103984}, "runs": [{"success": true, "ipc": null, "returncode": null, "timed_out": null, "wall_s": null, "stdout_tail": ""}], "mapped_result": {"combined_score": 1.0, "score": 1.0, "artifacts": {"cycles": 45170.0, "subpixel_error": 0.219}}}

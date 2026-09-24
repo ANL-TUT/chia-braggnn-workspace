@@ -1,0 +1,10 @@
+{
+  "sha256": "23e840ee0766c6392c2dc86386e1c7b586a56ccf5bb78652ca00ad2d2692d26b",
+  "combined_score": 1.0,
+  "cycles": 45170.0,
+  "subpixel_error": 0.219,
+  "failure_stage": null,
+  "build_stage": null,
+  "error": null,
+  "candidate": "candidate_0001.py"
+}
