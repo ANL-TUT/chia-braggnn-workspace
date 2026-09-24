@@ -1,0 +1,23 @@
+Traceback (most recent call last):
+  File "/home/ray/anaconda3/bin/exocc", line 8, in <module>
+    sys.exit(main())
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 140, in main
+    exocc(*sys.argv[1:], name=Path(sys.argv[0]).name)
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 84, in exocc
+    library = [
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 87, in <listcomp>
+    for proc in get_procs_from_module(load_user_code(mod))
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/main.py", line 135, in load_user_code
+    spec.loader.exec_module(user_module)
+  File "<frozen importlib._bootstrap_external>", line 883, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "/tmp/chia-braggnn-candidate-fm1v1kcq/braggnn_schedule.py", line 219, in <module>
+    braggnn_eval = schedule_eval()
+  File "/tmp/chia-braggnn-candidate-fm1v1kcq/braggnn_schedule.py", line 195, in schedule_eval
+    gemmini = reorder_stmts(gemmini, gemmini.find("for irow in _: _ ; pred : _"))
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/API.py", line 257, in find
+    return C.find(self._root(), self, pattern, many, call_depth=call_depth + 1)
+  File "/home/ray/anaconda3/lib/python3.10/site-packages/exo/API_cursors.py", line 967, in find
+    raise SchedulingError("failed to find matches", pattern=pattern)
+exo.rewrite.new_eff.SchedulingError: find: failed to find matches
+Pattern: for irow in _: _ ; pred : _
