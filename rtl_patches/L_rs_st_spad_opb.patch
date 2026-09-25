@@ -1,0 +1,21 @@
+diff --git a/src/main/scala/gemmini/ReservationStation.scala b/src/main/scala/gemmini/ReservationStation.scala
+--- a/src/main/scala/gemmini/ReservationStation.scala
++++ b/src/main/scala/gemmini/ReservationStation.scala
+@@ -538,8 +538,15 @@
+ 
+   // Explicitly mark "opb" in all ld/st queues entries as being invalid.
+   // This helps us to reduce the total reservation table area
+-  Seq(entries_ld, entries_st).foreach { entries_type =>
+-    entries_type.foreach { e =>
++  entries_ld.foreach { e =>
++    e.bits.opb.valid := false.B
++    e.bits.opb.bits := DontCare
++  }
++  // ...except in a mvout_spad's entry, where opb is the accumulator rows it
++  // reads (opa is its scratchpad destination): the ld / ex dependency checks
++  // use it for their WAR hazards on those rows.
++  entries_st.foreach { e =>
++    when (e.bits.cmd.cmd.inst.funct =/= STORE_SPAD_CMD) {
+       e.bits.opb.valid := false.B
+       e.bits.opb.bits := DontCare
+     }

@@ -1,9 +1,3 @@
-diff --git a/software/gemmini-rocc-tests b/software/gemmini-rocc-tests
---- a/software/gemmini-rocc-tests
-+++ b/software/gemmini-rocc-tests
-@@ -1 +1 @@
--Subproject commit 28752aea3d3c7970802d24de0d79f71150d9cbcf
-+Subproject commit 28752aea3d3c7970802d24de0d79f71150d9cbcf-dirty
 diff --git a/src/main/scala/gemmini/Configs.scala b/src/main/scala/gemmini/Configs.scala
 index 15b66db..2e6da5a 100644
 --- a/src/main/scala/gemmini/Configs.scala
@@ -202,7 +196,7 @@ index 5c91201..536fe11 100644
      }.elsewhen(state === get_scaled_inv_sum_exp) {
        next_state := Mux(inv_sum_exp_scale_mul_pipe.io.ins.fire && inv_sum_exp_to_scale_id === id.U, state.next, state)
 diff --git a/src/main/scala/gemmini/ReservationStation.scala b/src/main/scala/gemmini/ReservationStation.scala
-index 1ad02ee..c4b67b9 100644
+index 1ad02ee..70489dc 100644
 --- a/src/main/scala/gemmini/ReservationStation.scala
 +++ b/src/main/scala/gemmini/ReservationStation.scala
 @@ -374,8 +374,13 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
@@ -238,6 +232,24 @@ index 1ad02ee..c4b67b9 100644
            } else {
              when (issue_entry.bits.complete_on_issue) {
                deps_type(issue_id) := false.B
+@@ -525,8 +538,15 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
+ 
+   // Explicitly mark "opb" in all ld/st queues entries as being invalid.
+   // This helps us to reduce the total reservation table area
+-  Seq(entries_ld, entries_st).foreach { entries_type =>
+-    entries_type.foreach { e =>
++  entries_ld.foreach { e =>
++    e.bits.opb.valid := false.B
++    e.bits.opb.bits := DontCare
++  }
++  // ...except in a mvout_spad's entry, where opb is the accumulator rows it
++  // reads (opa is its scratchpad destination): the ld / ex dependency checks
++  // use it for their WAR hazards on those rows.
++  entries_st.foreach { e =>
++    when (e.bits.cmd.cmd.inst.funct =/= STORE_SPAD_CMD) {
+       e.bits.opb.valid := false.B
+       e.bits.opb.bits := DontCare
+     }
 diff --git a/src/main/scala/gemmini/Scratchpad.scala b/src/main/scala/gemmini/Scratchpad.scala
 index 2b50362..e5b7694 100644
 --- a/src/main/scala/gemmini/Scratchpad.scala
