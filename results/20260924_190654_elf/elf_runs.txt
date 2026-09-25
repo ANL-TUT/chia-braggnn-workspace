@@ -21,3 +21,16 @@
     conv3               1,575
     fc1                   856
     fc2..output           831
+== /var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-b-sm-marks/braggnn.riscv
+  avg cycles/patch 38,205  avg error [0.219, 0.151] px  patches differing from the first ELF: 0/10
+    conv1               4,508
+    nlb_qkv             5,334
+    theta_phi           2,793
+    softmax             6,746
+    attention_g         2,384
+    nlb_out_conv        2,250
+    resadd              3,096
+    conv2               6,566
+    conv3               1,576
+    fc1                 2,080
+    fc2..output           832

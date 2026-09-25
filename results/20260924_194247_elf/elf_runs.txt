@@ -1,0 +1,4 @@
+== /var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-best/braggnn.riscv
+  avg cycles/patch 34,939  avg error [0.219, 0.151] px  patches differing from the first ELF: 0/10
+== /var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-d-oneload/braggnn.riscv
+  avg cycles/patch 34,092  avg error [0.219, 0.151] px  patches differing from the first ELF: 0/10
