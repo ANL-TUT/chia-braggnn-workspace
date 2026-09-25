@@ -22,7 +22,6 @@ Verilator, current-best C (warm cycles/patch; 2-patch runs up to G, 4-patch afte
 | J | J_mvin_scale_parallel | mvin scaler `num_scale_units` 4 -> -1 (a scaled mvin row per cycle) | 29,569 |
 | (SW) | - | `OPT_ATT_STRIDE=128` in the C file (aligned 81x81 rows) | 28,830 |
 | K | K_inflight64 | `max_in_flight_mem_reqs` 16 -> 64 (Load/StoreController commands in flight 2 -> 5) | 27,841 |
-
 | L | L_rs_st_spad_opb | bug fix: the RS kept no accumulator source for mvout_spad entries (opb wiped for all ld/st entries), so a later compute could overwrite accumulator rows a mvout_spad was still reading (AccumulatorMem "reading from and writing to same address" assertion in the qkv scratchpad chain) | 23,834 (unchanged) |
 
 With L the C file's OPT_QKV_SPAD_CHAIN runs bit-exact, but slower than the
