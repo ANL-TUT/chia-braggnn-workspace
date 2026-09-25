@@ -62,6 +62,8 @@
 //                       before the patch loop, and stay there: each patch skips
 //                       those weight loads. The conv layers (loop_conv) still load
 //                       theirs. Outside the per-patch timing like the staging copies.
+//   OPT_CONV2_RESIDENT  conv2's weights (18 KB) likewise stay in the scratchpad, at
+//                       the top (b_spad_id = 2 fixes the conv loop's weight region).
 //   OPT_QUANT_OUTSIDE   the fp32 -> int8 input quantization of every patch runs
 //                       before the patch loop, outside the per-patch timing (as the
 //                       int8 -> px dequantization in braggnn_main.c already is).
@@ -78,6 +80,7 @@
 // OPT_WEIGHTS_RESIDENT, 26,489 cycles/patch, and OPT_QUANT_OUTSIDE, 25,595
 // cycles/patch (from here on the timing excludes the input quantization, which
 // the seed's and OPT_BASELINE's numbers include: ~1,750 cycles one at a time).
+// OPT_CONV2_RESIDENT: 24,483 cycles/patch.
 // OPT_CONV1_IM2COL (+2.2k in conv1) and OPT_TAIL_ON_CPU (slower than four tiny
 // Gemmini loops; a version with all outputs accumulating at once and fcvt
 // rounding was slower still: 2,127 vs 848 cycles) measured worse,
@@ -105,6 +108,7 @@
 #define OPT_ATT_STRIDE 128
 #endif
 #define OPT_WEIGHTS_RESIDENT
+#define OPT_CONV2_RESIDENT
 #define OPT_QUANT_OUTSIDE
 #else
 #define OPT_QUANT_SERIAL  // the Exo build's one-at-a-time loop, inside the timing
@@ -224,6 +228,22 @@ static void conv1(const int8_t *inp, const int8_t *w, const int32_t *bias,
 #define OPT_CONV2_SPLIT 1
 #endif
 
+#ifdef OPT_CONV2_RESIDENT
+#if OPT_CONV2_SPLIT != 1
+#error "OPT_CONV2_RESIDENT needs OPT_CONV2_SPLIT=1"
+#endif
+// conv2's weights (9 x 64 x 32 = 1152 scratchpad rows) stay in the rows just
+// below the top of the scratchpad: with b_spad_id = 2 the conv loop's weight
+// region ends at row 16384 (2 * max_addr / concurrent_loops) for either loop
+// slot. A warm-up call loads them; in the patch loop weights = NULL, which the
+// weight loader skips (no commands for DRAM address 0).
+#define CONV2_B_ID 2
+#define CONV2_W(w) NULL
+#else
+#define CONV2_B_ID 1
+#define CONV2_W(w) (w)
+#endif
+
 static void conv2(const int8_t *inp, const int8_t *w, const int32_t *bias,
                   int8_t *out, float scale) {
   gemmini_extended_config_st(32, RELU, scale);
@@ -231,8 +251,9 @@ static void conv2(const int8_t *inp, const int8_t *w, const int32_t *bias,
   const int och = 32 / OPT_CONV2_SPLIT;
   for (int s = 0; s < OPT_CONV2_SPLIT; s++)
     gemmini_loop_conv_ws(1, 9, 9, 64, och, 7, 7, 7, 7, 1, 0, 3, 1, 1, 1, 0, 1, 7, 7, och, 3, 3, 64,
-                         0, 0, 0, 0, 0, 0, 0, 0, 7, 7, w + s * och, out + s * och, bias + s * och,
-                         inp, 0, 1, 0, 0, 0, RELU, 0, 0, 0, 0, 1, 64, 32, 32, 0, 1, 1);
+                         0, 0, 0, 0, 0, 0, 0, 0, 7, 7, w ? w + s * och : NULL, out + s * och,
+                         bias + s * och, inp, 0, 1, 0, 0, 0, RELU, 0, 0, 0, 0, 1, 64, 32, 32, 0, 1,
+                         CONV2_B_ID);
   gemmini_fence();
 }
 
@@ -714,6 +735,13 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
   }
 #endif
 
+#ifdef OPT_CONV2_RESIDENT
+  {
+    static int8_t c2_in[81 * 64] ALIGNED, c2_out[49 * 32] ALIGNED;  // zero input, discarded
+    conv2(c2_in, w_conv2, b_conv2, c2_out, 1.0f);
+  }
+#endif
+
 #ifdef OPT_QUANT_OUTSIDE
   // Every patch's input quantized before the patch loop, outside the per-patch
   // timing, each into its own 64-byte-aligned slot.
@@ -819,7 +847,7 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
                 nlb_conv_out, nlb_out);
     MARK(7, "resadd");
 
-    conv2(nlb_out, w_conv2, b_conv2, conv2_out, s_conv2);
+    conv2(nlb_out, CONV2_W(w_conv2), b_conv2, conv2_out, s_conv2);
     MARK(8, "conv2");
     conv3(conv2_out, w_conv3, b_conv3, conv3_out, s_conv3);
     MARK(9, "conv3");
