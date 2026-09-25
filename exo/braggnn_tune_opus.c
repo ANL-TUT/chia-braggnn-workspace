@@ -18,6 +18,20 @@
 //                       the CPU with Gemmini's own output arithmetic
 //                       (scale_and_sat: round-half-even scale, saturate, ReLU),
 //                       saving four tiny Gemmini loops and their fences.
+//   OPT_SOFTMAX_ONE_LOAD  with OPT_SOFTMAX_LOAD: mark the loop's B load as already
+//                       done (LOOP_WS rs2 bit 4, LoopMatmul's ldb_started/_completed),
+//                       so A is loaded once. In a resadd loop ldA overwrites the
+//                       accumulator and ldB adds to it, and the store waits for
+//                       both loaders, so the result is the same A. B stays = A
+//                       with scale 0, so hardware that ignores the bit is still
+//                       correct.
+//   OPT_NLB_SPAD_CHAIN  with OPT_SOFTMAX_LOAD: the softmax loop stores its 81x81
+//                       output into the scratchpad (LOOP_WS spad_only store,
+//                       LoopMatmulStCSpad) instead of DRAM, and attention*g reads
+//                       it there as A (a_ex_spad_id = 0 -> a_addr_start, ldA
+//                       marked done): one DRAM store + reload less. Tile (i,j) of
+//                       the store lands at dst + (i*6+j)*16, exactly where the
+//                       execute unit reads A tile (i,k) of a K = 6 loop.
 //   OPT_CONV1_IM2COL    conv1 (one input channel) as a matmul: the CPU writes the
 //                       quantized input straight into an 81x16 im2col matrix
 //                       (9 taps, zero-padded), Gemmini multiplies it by the
@@ -27,10 +41,12 @@
 //                       from DRAM (A = NULL, same a_spad_id: gemmini.h's a_reuse).
 //
 // Default: the best measured combination (FireSim, predictions identical to
-// the seed's): OPT_FC1_NO_FLATTEN + OPT_SOFTMAX_LOAD + OPT_QKV_LOOP_WS +
-// OPT_QKV_REUSE_A, 34,939 cycles/patch against 39,953 for OPT_BASELINE (the
-// Exo build's calls). OPT_CONV1_IM2COL (+2.2k in conv1) and OPT_TAIL_ON_CPU
-// (slower than four tiny Gemmini loops) measured worse and stay off.
+// the seed's): OPT_FC1_NO_FLATTEN + OPT_SOFTMAX_LOAD + OPT_SOFTMAX_ONE_LOAD +
+// OPT_QKV_LOOP_WS + OPT_QKV_REUSE_A, 34,092 cycles/patch against 39,953 for
+// OPT_BASELINE (the Exo build's calls). OPT_CONV1_IM2COL (+2.2k in conv1) and
+// OPT_TAIL_ON_CPU (slower than four tiny Gemmini loops) measured worse, and
+// OPT_NLB_SPAD_CHAIN (29,652) changes the predictions (9 of 10 patches), so
+// they stay off.
 //
 // Build:  scripts/build_c_tune.sh exo/braggnn_tune_opus.c [-DOPT_BASELINE] [-DOPT_...]
 // Profile per layer: add -DCHIA_LAYER_MARKS (braggnn_main.c prints the marks).
@@ -44,6 +60,7 @@
 #ifndef OPT_BASELINE
 #define OPT_FC1_NO_FLATTEN
 #define OPT_SOFTMAX_LOAD
+#define OPT_SOFTMAX_ONE_LOAD
 #define OPT_QKV_LOOP_WS
 #define OPT_QKV_REUSE_A
 #endif
@@ -67,6 +84,25 @@ static inline int32_t rdcycle32(void) {
   asm volatile("rdcycle %0" : "=r"(c));
   return (int32_t)c;
 }
+
+// gemmini_loop_ws with extra LOOP_WS rs2 bits: bits 3..7 mark the ldA, ldB,
+// ldD, ex and st stages of the loop as already started and completed.
+#define LOOP_SKIP_LDA (1 << 3)
+#define LOOP_SKIP_LDB (1 << 4)
+#define LOOP_SPAD_ONLY (1 << 9)
+// Scratchpad rows for the softmax output in OPT_NLB_SPAD_CHAIN: 36 tiles of 16
+// rows, clear of the loop A region (from row 0) and B region (ending at
+// max_addr / concurrent_loops) that the neighbouring loops use.
+#define SOFTMAX_SPAD_ROW 4096
+#define gemmini_loop_ws_skip(I, J, K, pad_I, pad_J, pad_K, A, B, D, C, A_stride, B_stride, D_stride, C_stride, A_transpose, B_transpose, full_C, low_D, ex_accumulate, act, a_spad_id, b_spad_id, is_resadd, skips) \
+  { \
+    ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(pad_K) << 32) | ((uint64_t)(pad_J) << 16) | (uint64_t)(pad_I), ((uint64_t)(K) << 32) | ((uint64_t)(J) << 16) | (uint64_t)(I), k_LOOP_WS_CONFIG_BOUNDS) \
+    ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, A, B, k_LOOP_WS_CONFIG_ADDRS_AB) \
+    ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, D, C, k_LOOP_WS_CONFIG_ADDRS_DC) \
+    ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, A_stride, B_stride, k_LOOP_WS_CONFIG_STRIDES_AB) \
+    ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, D_stride, C_stride, k_LOOP_WS_CONFIG_STRIDES_DC) \
+    ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(a_spad_id) << 18) | ((uint64_t)(b_spad_id) << 16) | ((uint64_t)(act) << 8) | ((low_D) << 2) | ((full_C) << 1) | (ex_accumulate), (skips) | ((is_resadd) << 2) | ((B_transpose) << 1) | (A_transpose), k_LOOP_WS) \
+  }
 
 // ---------------------------------------------------------------- conv layers
 
@@ -174,7 +210,12 @@ static void softmax_81(const int8_t *A, int8_t *C, float in_scale, float out_sca
   // acc = 1.0 * A + 0.0 * A: the input goes straight into the accumulator.
   gemmini_extended4_config_ld(81, 1.0f, true, DIM, 0);
   gemmini_extended4_config_ld(81, 0.0f, true, DIM, 1);
+#ifdef OPT_SOFTMAX_ONE_LOAD
+  gemmini_loop_ws_skip(6, 6, 0, 15, 15, 0, A, A, 0, C, 81, 81, 0, 81, 0, 0, 0, 0, 0, SOFTMAX, 0, 0,
+                       1, LOOP_SKIP_LDB);
+#else
   gemmini_loop_ws(6, 6, 0, 15, 15, 0, A, A, 0, C, 81, 81, 0, 81, 0, 0, 0, 0, 0, SOFTMAX, 0, 0, 1);
+#endif
 #else
   static const int8_t identity[81 * 81] = {
       [0] = 1, [82] = 1, [164] = 1, [246] = 1, [328] = 1, [410] = 1, [492] = 1, [574] = 1,
@@ -194,6 +235,56 @@ static void softmax_81(const int8_t *A, int8_t *C, float in_scale, float out_sca
 #endif
   gemmini_fence();
 }
+
+#ifdef OPT_NLB_SPAD_CHAIN
+// Softmax as in OPT_SOFTMAX_LOAD, but the output goes to scratchpad rows
+// SOFTMAX_SPAD_ROW.. (spad_only store) instead of DRAM.
+static void softmax_81_to_spad(const int8_t *A, float in_scale, float out_scale) {
+  gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
+  gemmini_extended_config_st(81, 0, 1.0f / (127.0f * out_scale));
+  gemmini_config_norm((int)(0.693147 / in_scale), 0, 0, 1, 0, (int32_t)(1.353f / in_scale),
+                      (int32_t)(0.344f / (0.3585f * in_scale * in_scale)));
+  gemmini_config_norm((65536 / (int)(0.693147 / in_scale)), 1, 0, 1, 0,
+                      (int32_t)(1.353f / in_scale),
+                      (int32_t)(0.344f / (0.3585f * in_scale * in_scale)));
+  gemmini_extended4_config_ld(81, 1.0f, true, DIM, 0);
+  gemmini_extended4_config_ld(81, 0.0f, true, DIM, 1);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)0 << 32) | ((uint64_t)15 << 16) | 15,
+                           ((uint64_t)0 << 32) | ((uint64_t)6 << 16) | 6, k_LOOP_WS_CONFIG_BOUNDS);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, A, A, k_LOOP_WS_CONFIG_ADDRS_AB);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, 0, k_LOOP_WS_CONFIG_ADDRS_DC);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 81, 81, k_LOOP_WS_CONFIG_STRIDES_AB);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, 81, k_LOOP_WS_CONFIG_STRIDES_DC);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)SOFTMAX << 8),
+                           ((uint64_t)SOFTMAX_SPAD_ROW << 32) | LOOP_SPAD_ONLY
+#ifdef OPT_SOFTMAX_ONE_LOAD
+                               | LOOP_SKIP_LDB
+#endif
+                               | (1 << 2) /* is_resadd */,
+                           k_LOOP_WS);
+  gemmini_fence();
+}
+
+// attention*g with A = the softmax output already in the scratchpad.
+static void matmul_attention_g_spad(const int8_t *B, int8_t *C, float scale) {
+  gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
+  gemmini_extended_config_st(32, NO_ACTIVATION, scale);
+  gemmini_extended3_config_ld(81, 1.0f, false, 0);
+  gemmini_extended3_config_ld(32, 1.0f, false, 1);
+  gemmini_extended3_config_ld(32, 1.0f, false, 2);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)15 << 32) | ((uint64_t)0 << 16) | 15,
+                           ((uint64_t)6 << 32) | ((uint64_t)2 << 16) | 6, k_LOOP_WS_CONFIG_BOUNDS);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, B, k_LOOP_WS_CONFIG_ADDRS_AB);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, C, k_LOOP_WS_CONFIG_ADDRS_DC);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 81, 32, k_LOOP_WS_CONFIG_STRIDES_AB);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 32, 32, k_LOOP_WS_CONFIG_STRIDES_DC);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, SOFTMAX_SPAD_ROW, 0, k_LOOP_WS_CONFIG_SPAD_AB);
+  // a_ex_spad_id = 0 (read A from a_addr_start), b_spad_id = 1, no activation.
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)1 << 16) | ((uint64_t)NO_ACTIVATION << 8),
+                           LOOP_SKIP_LDA, k_LOOP_WS);
+  gemmini_fence();
+}
+#endif
 
 // C[81 x 32] = attention[81 x 81] * g[81 x 32]
 static void matmul_attention_g(const int8_t *A, const int8_t *B, int8_t *C, float scale) {
@@ -355,9 +446,15 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
     MARK(2, "nlb_qkv");
     matmul_theta_phi(theta, phi, attention_raw, nlb_matmul_scale[0]);
     MARK(3, "theta_phi");
+#ifdef OPT_NLB_SPAD_CHAIN
+    softmax_81_to_spad(attention_raw, softmax_input_scale[0], softmax_output_scale[0]);
+    MARK(4, "softmax");
+    matmul_attention_g_spad(g, attended, nlb_matmul_1_scale[0]);
+#else
     softmax_81(attention_raw, attention, softmax_input_scale[0], softmax_output_scale[0]);
     MARK(4, "softmax");
     matmul_attention_g(attention, g, attended, nlb_matmul_1_scale[0]);
+#endif
     MARK(5, "attention_g");
     conv1x1(attended, 32, w_nlb_out, b_nlb_out, nlb_conv_out, 64, nlb_out_scale[0]);
     gemmini_fence();
