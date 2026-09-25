@@ -1,0 +1,13 @@
+diff --git a/src/main/scala/gemmini/Configs.scala b/src/main/scala/gemmini/Configs.scala
+--- a/src/main/scala/gemmini/Configs.scala
++++ b/src/main/scala/gemmini/Configs.scala
+@@ -53,7 +53,7 @@
+     has_nonlinear_activations = true,
+ 
+     // Reservation station entries
+-    reservation_station_entries_ld = 8,
+-    reservation_station_entries_st = 8,
++    reservation_station_entries_ld = 16,
++    reservation_station_entries_st = 16,
+     reservation_station_entries_ex = 16,
+ 

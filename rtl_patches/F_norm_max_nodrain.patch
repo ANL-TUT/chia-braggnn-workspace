@@ -1,0 +1,16 @@
+diff --git a/src/main/scala/gemmini/Normalizer.scala b/src/main/scala/gemmini/Normalizer.scala
+index 5c91201..10bd6fc 100644
+--- a/src/main/scala/gemmini/Normalizer.scala
++++ b/src/main/scala/gemmini/Normalizer.scala
+@@ -289,7 +289,10 @@ class Normalizer[T <: Data, U <: Data](max_len: Int, num_reduce_lanes: Int, num_
+     def waiting_for_lanes_to_drain =
+       (cmd === NormCmd.MEAN && (state === get_sum || state === get_mean)) ||
+         (cmd === NormCmd.INV_STDDEV && (state === get_sum || state === get_variance)) ||
+-        (cmd === NormCmd.MAX && (state === get_max)) ||
++        // a MAX input leaves get_max after its last lane group (one cycle when a
++        // row block fits the lanes), and max_lanes always takes it, so only
++        // multi-group inputs hold off the next input
++        (cmd === NormCmd.MAX && (state === get_max) && vec_groups_left > 1.U) ||
+         (cmd === NormCmd.INV_SUM_EXP && (state === get_sum))
+   }
+ 

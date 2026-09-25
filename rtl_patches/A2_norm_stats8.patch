@@ -1,0 +1,26 @@
+diff --git a/src/main/scala/gemmini/LoopMatmul.scala b/src/main/scala/gemmini/LoopMatmul.scala
+index 4542149..4554faa 100644
+--- a/src/main/scala/gemmini/LoopMatmul.scala
++++ b/src/main/scala/gemmini/LoopMatmul.scala
+@@ -572,7 +572,7 @@ class LoopMatmulStC(block_size: Int, coreMaxAddrBits: Int, iterator_bitwidth: In
+   val ln_cmd = Reg(UInt(iterator_bitwidth.W))
+   val ln_stat_id = Reg(UInt(iterator_bitwidth.W))
+ 
+-  val NORM_STAT_IDS = 4 // must match the Normalizer's num_stats (Scratchpad)
++  val NORM_STAT_IDS = 8 // must match the Normalizer's num_stats (Scratchpad)
+ 
+   val ln_norm_cmds = VecInit(VecInit(NormCmd.SUM, NormCmd.MEAN), VecInit(NormCmd.VARIANCE, NormCmd.INV_STDDEV),
+     VecInit(NormCmd.RESET, NormCmd.RESET))
+diff --git a/src/main/scala/gemmini/Scratchpad.scala b/src/main/scala/gemmini/Scratchpad.scala
+index 2b50362..6948c03 100644
+--- a/src/main/scala/gemmini/Scratchpad.scala
++++ b/src/main/scala/gemmini/Scratchpad.scala
+@@ -660,7 +660,7 @@ class Scratchpad[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T,
+       is_passthru = !config.has_normalizations,
+       max_len = block_cols,
+       num_reduce_lanes = -1,
+-      num_stats = 4,
++      num_stats = 8,
+       latency = 4,
+       fullDataType = acc_row_t,
+       scale_t = acc_scale_t,

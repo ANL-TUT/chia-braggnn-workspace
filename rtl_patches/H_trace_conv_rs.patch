@@ -1,0 +1,37 @@
+diff --git a/src/main/scala/gemmini/LoopConv.scala b/src/main/scala/gemmini/LoopConv.scala
+index 2db2b03..febbb2d 100644
+--- a/src/main/scala/gemmini/LoopConv.scala
++++ b/src/main/scala/gemmini/LoopConv.scala
+@@ -1268,6 +1268,14 @@ class LoopConv (block_size: Int, coreMaxAddrBits: Int, reservation_station_size:
+   ld_weights.io.rob_overloaded := ld_utilization >= max_lds.U
+   ex.io.rob_overloaded := ex_utilization >= max_exs.U
+   st.io.rob_overloaded := st_utilization >= max_sts.U
++  val trc_cycle = RegInit(0.U(32.W)); trc_cycle := trc_cycle + 1.U
++  when (!(ld_bias.io.idle && ld_input.io.idle && ld_weights.io.idle && ex.io.idle && st.io.idle)) {
++    printf("TRC cv %d idle=%b%b%b%b%b v=%b%b%b%b%b r=%b%b%b%b%b u=%d,%d,%d\n", trc_cycle,
++      ld_bias.io.idle, ld_input.io.idle, ld_weights.io.idle, ex.io.idle, st.io.idle,
++      ld_bias.io.cmd.valid, ld_input.io.cmd.valid, ld_weights.io.cmd.valid, ex.io.cmd.valid, st.io.cmd.valid,
++      ld_bias.io.cmd.ready, ld_input.io.cmd.ready, ld_weights.io.cmd.ready, ex.io.cmd.ready, st.io.cmd.ready,
++      ld_utilization, ex_utilization, st_utilization)
++  }
+ 
+   // Wire up iterator inputs
+   ex.io.lda_completed := (ld_input.io.loop_id =/= ex.io.loop_id) || ld_input.io.idle
+diff --git a/src/main/scala/gemmini/ReservationStation.scala b/src/main/scala/gemmini/ReservationStation.scala
+index 1ad02ee..8b5c481 100644
+--- a/src/main/scala/gemmini/ReservationStation.scala
++++ b/src/main/scala/gemmini/ReservationStation.scala
+@@ -539,6 +552,13 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
+   val utilization_ld_q = PopCount(entries_ld.map(e => e.valid))
+   val utilization_st_q = PopCount(entries_st.map(e => e.valid))
+   val utilization_ex_q = PopCount(entries_ex.map(e => e.valid))
++  val trc_cycle = RegInit(0.U(32.W)); trc_cycle := trc_cycle + 1.U
++  when (io.busy) {
++    printf("TRC rs %d iss=%b%b%b n=%d,%d,%d un=%d,%d,%d\n", trc_cycle,
++      io.issue.ld.fire, io.issue.ex.fire, io.issue.st.fire,
++      utilization_ld_q, utilization_ex_q, utilization_st_q,
++      utilization_ld_q_unissued, utilization_ex_q_unissued, utilization_st_q_unissued)
++  }
+ 
+   val valids = VecInit(entries.map(_.valid))
+   val functs = VecInit(entries.map(_.bits.cmd.cmd.inst.funct))

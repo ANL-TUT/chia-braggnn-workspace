@@ -1,0 +1,28 @@
+diff --git a/src/main/scala/gemmini/Normalizer.scala b/src/main/scala/gemmini/Normalizer.scala
+--- a/src/main/scala/gemmini/Normalizer.scala
++++ b/src/main/scala/gemmini/Normalizer.scala
+@@ -325,6 +325,15 @@
+   val lanes = Module(new AccumulationLanes(num_stats, acc_t, n_lanes, latency))
+   val max_lanes = Module(new MaxLanes(num_stats, acc_t, n_lanes, latency)) // TODO: change latency?
+ 
++  // Lane inputs in flight per stat id: a stat's sum is final once its own are
++  // out, even while the lanes keep adding up other rows
++  val lanes_in_flight = RegInit(VecInit(Seq.fill(num_stats)(0.U(log2Up(latency + 2).W))))
++  for (id <- 0 until num_stats) {
++    val lane_in = lanes.io.ins.fire && lanes.io.ins.bits.stats_id === id.U
++    val lane_out = lanes.io.out.fire && lanes.io.out.bits.stats_id === id.U
++    lanes_in_flight(id) := lanes_in_flight(id) + lane_in.asUInt - lane_out.asUInt
++  }
++
+   {
+     // Lanes input
+     val in_lanes_stats_id = MuxCase((num_stats-1).U,
+@@ -583,7 +592,7 @@
+     val stat = stats(id)
+ 
+     // Divider input
+-    exp_divider_in(id).valid := (stat.state === get_inv_sum_exp) && !lanes.io.busy
++    exp_divider_in(id).valid := (stat.state === get_inv_sum_exp) && lanes_in_flight(id) === 0.U
+ 
+     // Divider output
+     exp_divider_out(id).ready := stat.state === waiting_for_inv_sum_exp

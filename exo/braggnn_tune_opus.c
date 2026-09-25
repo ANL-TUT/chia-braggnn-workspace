@@ -52,6 +52,16 @@
 //                       quantized input straight into an 81x16 im2col matrix
 //                       (9 taps, zero-padded), Gemmini multiplies it by the
 //                       9x64 weights (+ bias). Same integer sums.
+//   OPT_ATT_STRIDE=n    row stride in bytes of the two 81x81 int8 buffers (theta*phi^T
+//                       and the softmax output), 128 in the default set (81 with
+//                       OPT_BASELINE): aligned rows make the DMA stores and loads of
+//                       those matrices cheaper (Verilator, RTL A-J: 29,569 -> 28,830
+//                       cycles/patch). Values unchanged.
+//   OPT_WEIGHTS_RESIDENT  the loop_ws layers' weights (qkv, NLB out, fc1..output;
+//                       ~800 scratchpad rows) are loaded into the scratchpad once,
+//                       before the patch loop, and stay there: each patch skips
+//                       those weight loads. The conv layers (loop_conv) still load
+//                       theirs. Outside the per-patch timing like the staging copies.
 //   OPT_QKV_LOOP_WS     the three NLB 1x1 convs (same input) as loop_ws matmuls;
 //   OPT_QKV_REUSE_A     with it, the second and third skip reloading the input
 //                       from DRAM (A = NULL, same a_spad_id: gemmini.h's a_reuse).
@@ -59,10 +69,14 @@
 // Default: the best measured combination (FireSim, predictions identical to
 // the seed's): OPT_FC1_NO_FLATTEN + OPT_SOFTMAX_LOAD + OPT_SOFTMAX_ONE_LOAD +
 // OPT_QKV_LOOP_WS + OPT_QKV_REUSE_A + OPT_NLBOUT_LOOP_WS, 34,028 cycles/patch against 39,953 for
-// OPT_BASELINE (the Exo build's calls). OPT_CONV1_IM2COL (+2.2k in conv1) and
-// OPT_TAIL_ON_CPU (slower than four tiny Gemmini loops) measured worse, and
-// OPT_NLB_SPAD_CHAIN (29,652) changes the predictions (9 of 10 patches), so
-// they stay off.
+// OPT_BASELINE (the Exo build's calls). Added since, measured on Verilator with the
+// rtl_patches/ RTL: OPT_ATT_STRIDE=128 and the eight-wide input quantization
+// (OPT_QUANT_SERIAL restores the one-at-a-time loop), 27,039 cycles/patch.
+// OPT_CONV1_IM2COL (+2.2k in conv1) and OPT_TAIL_ON_CPU (slower than four tiny
+// Gemmini loops; a version with all outputs accumulating at once and fcvt
+// rounding was slower still: 2,127 vs 848 cycles) measured worse,
+// OPT_NLB_SPAD_CHAIN (29,652) changes the predictions (9 of 10 patches), and so
+// does OPT_CONV2_SPLIT=2/4 (also on the stock bitstream), so they stay off.
 //
 // Build:  scripts/build_c_tune.sh exo/braggnn_tune_opus.c [-DOPT_BASELINE] [-DOPT_...]
 // Profile per layer: add -DCHIA_LAYER_MARKS (braggnn_main.c prints the marks).
@@ -81,6 +95,17 @@
 #define OPT_QKV_LOOP_WS
 #define OPT_QKV_REUSE_A
 #define OPT_NLBOUT_LOOP_WS
+#ifndef OPT_ATT_STRIDE
+#define OPT_ATT_STRIDE 128
+#endif
+#endif
+
+#ifndef OPT_ATT_STRIDE
+#define OPT_ATT_STRIDE 81
+#endif
+#define ATT_S OPT_ATT_STRIDE
+#if ATT_S != 81 && (defined(OPT_NLB_SPAD_CHAIN) || defined(OPT_QKV_SPAD_CHAIN))
+#error "the spad chains keep the 81-byte stride: add -DOPT_ATT_STRIDE=81"
 #endif
 
 #ifdef CHIA_LAYER_MARKS
@@ -115,6 +140,39 @@ static inline int32_t rdcycle32(void) {
 #define PHI_SPAD_ROW (3 * SPAD_BANK_ROWS)
 #define LOOP_REGION1_A_START 0
 #define LOOP_REGION1_B_END (2 * SPAD_BANK_ROWS)  // max_addr / concurrent_loops
+
+#ifdef OPT_WEIGHTS_RESIDENT
+#if !defined(OPT_QKV_LOOP_WS) || !defined(OPT_NLBOUT_LOOP_WS) || defined(OPT_QKV_SPAD_CHAIN) || \
+    defined(OPT_TAIL_ON_CPU)
+#error "OPT_WEIGHTS_RESIDENT needs the loop_ws qkv / NLB-out / fc path"
+#endif
+// The loop_ws layers' weights stay in scratchpad rows from bank 2 on, above
+// the id-1 regions (A from row 0, B ending at row 8192) that every loop uses.
+// Each layer's B region is [end - K*J*16, end) (LoopMatmulLdB), selected with
+// b_spad_id = 0 and LOOP_WS_CONFIG_SPAD_AB. A warm-up call before the patch
+// loop loads it; in the patch loop B = NULL, which the B loader skips (it
+// issues nothing for DRAM address 0), and the execute unit reads the tiles.
+#define WRES_THETA (2 * SPAD_BANK_ROWS + 128)  // K 4 x J 2 tiles
+#define WRES_PHI (WRES_THETA + 128)
+#define WRES_G (WRES_PHI + 128)
+#define WRES_NLBOUT (WRES_G + 128)             // K 2 x J 4
+#define WRES_FC1 (WRES_NLBOUT + 208)           // K 13 x J 1
+#define WRES_FC2 (WRES_FC1 + 16)
+#define WRES_FC3 (WRES_FC2 + 16)
+#define WRES_FC4 (WRES_FC3 + 16)
+#define WRES_OUT (WRES_FC4 + 16)
+#define RES_B(w, end) NULL, (end)
+#else
+#define RES_B(w, end) (w), 0u
+#endif
+
+// b_end != 0: B lives in the scratchpad region ending at row b_end (see
+// OPT_WEIGHTS_RESIDENT); returns the b_spad_id for the loop.
+static inline int ws_b_region(uint32_t b_end) {
+  if (!b_end) return 1;
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, b_end, k_LOOP_WS_CONFIG_SPAD_AB);
+  return 0;
+}
 
 #define LOOP_BOUNDS(I, J, K, pad_I, pad_J, pad_K)                                             \
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC,                                                        \
@@ -208,30 +266,32 @@ static void conv1x1(const int8_t *inp, int in_ch, const int8_t *w, const int32_t
 // the bias a repeating D row (D stride 0), as tiled_matmul_outer issues it.
 // A second call with inp == NULL reuses the A that the previous call left in
 // scratchpad region a_spad_id = 1 (gemmini.h's a_reuse path).
-static void qkv_matmul(const int8_t *inp, const int8_t *w, const int32_t *bias, int8_t *out,
-                       float scale) {
+static void qkv_matmul(const int8_t *inp, const int8_t *w, uint32_t b_end, const int32_t *bias,
+                       int8_t *out, float scale) {
   gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
   gemmini_extended_config_st(32, NO_ACTIVATION, scale);
   gemmini_extended3_config_ld(64, 1.0f, false, 0);
   gemmini_extended3_config_ld(32, 1.0f, false, 1);
   gemmini_extended3_config_ld(0, 1.0f, false, 2);
+  const int b_id = ws_b_region(b_end);
   // I = 6 tiles of 81 rows (pad 15), J = 2 tiles of 32, K = 4 tiles of 64.
   gemmini_loop_ws(6, 2, 4, 15, 0, 0, inp, w, bias, out, 64, 32, 0, 32,
-                  0, 0, 0, 0, 1, NO_ACTIVATION, 1, 1, 0);
+                  0, 0, 0, 0, 1, NO_ACTIVATION, 1, b_id, 0);
 }
 #endif
 
 #ifdef OPT_NLBOUT_LOOP_WS
 // NLB output conv as a matmul: C[81 x 64] = A[81 x 32] * W[32 x 64] + bias.
-static void nlb_out_matmul(const int8_t *inp, const int8_t *w, const int32_t *bias, int8_t *out,
-                           float scale) {
+static void nlb_out_matmul(const int8_t *inp, const int8_t *w, uint32_t b_end,
+                           const int32_t *bias, int8_t *out, float scale) {
   gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
   gemmini_extended_config_st(64, NO_ACTIVATION, scale);
   gemmini_extended3_config_ld(32, 1.0f, false, 0);
   gemmini_extended3_config_ld(64, 1.0f, false, 1);
   gemmini_extended3_config_ld(0, 1.0f, false, 2);
+  const int b_id = ws_b_region(b_end);
   gemmini_loop_ws(6, 4, 2, 15, 0, 0, inp, w, bias, out, 32, 64, 0, 64,
-                  0, 0, 0, 0, 1, NO_ACTIVATION, 1, 1, 0);
+                  0, 0, 0, 0, 1, NO_ACTIVATION, 1, b_id, 0);
 }
 #endif
 
@@ -290,11 +350,11 @@ static int spad_vs_dram(uint32_t row, const int8_t *ref, const char *name) {
 // C[81 x 81] = theta[81 x 32] * phi[81 x 32]^T
 static void matmul_theta_phi(const int8_t *A, const int8_t *B, int8_t *C, float scale) {
   gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 1);
-  gemmini_extended_config_st(81, NO_ACTIVATION, scale);
+  gemmini_extended_config_st(ATT_S, NO_ACTIVATION, scale);
   gemmini_extended3_config_ld(32, 1.0f, false, 0);
   gemmini_extended3_config_ld(32, 1.0f, false, 1);
   gemmini_extended3_config_ld(81, 1.0f, false, 2);
-  gemmini_loop_ws(6, 6, 2, 15, 15, 0, A, B, 0, C, 32, 32, 81, 81, 0, 1, 0, 0, 0,
+  gemmini_loop_ws(6, 6, 2, 15, 15, 0, A, B, 0, C, 32, 32, 81, ATT_S, 0, 1, 0, 0, 0,
                   NO_ACTIVATION, 1, 1, 0);
   gemmini_fence();
 }
@@ -324,7 +384,7 @@ static void matmul_theta_phi_spad(int8_t *C, float scale) {
 
 static void softmax_81(const int8_t *A, int8_t *C, float in_scale, float out_scale) {
   gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
-  gemmini_extended_config_st(81, 0, 1.0f / (127.0f * out_scale));
+  gemmini_extended_config_st(ATT_S, 0, 1.0f / (127.0f * out_scale));
 #ifndef OPT_SOFTMAX_LOAD
   gemmini_extended3_config_ld(81, 1.0f, false, 0);
   gemmini_extended3_config_ld(81, 1.0f, false, 1);
@@ -337,15 +397,19 @@ static void softmax_81(const int8_t *A, int8_t *C, float in_scale, float out_sca
                       (int32_t)(0.344f / (0.3585f * in_scale * in_scale)));
 #ifdef OPT_SOFTMAX_LOAD
   // acc = 1.0 * A + 0.0 * A: the input goes straight into the accumulator.
-  gemmini_extended4_config_ld(81, 1.0f, true, DIM, 0);
-  gemmini_extended4_config_ld(81, 0.0f, true, DIM, 1);
+  gemmini_extended4_config_ld(ATT_S, 1.0f, true, DIM, 0);
+  gemmini_extended4_config_ld(ATT_S, 0.0f, true, DIM, 1);
 #ifdef OPT_SOFTMAX_ONE_LOAD
-  gemmini_loop_ws_skip(6, 6, 0, 15, 15, 0, A, A, 0, C, 81, 81, 0, 81, 0, 0, 0, 0, 0, SOFTMAX, 0, 0,
-                       1, LOOP_SKIP_LDB);
+  gemmini_loop_ws_skip(6, 6, 0, 15, 15, 0, A, A, 0, C, ATT_S, ATT_S, 0, ATT_S, 0, 0, 0, 0, 0,
+                       SOFTMAX, 0, 0, 1, LOOP_SKIP_LDB);
 #else
-  gemmini_loop_ws(6, 6, 0, 15, 15, 0, A, A, 0, C, 81, 81, 0, 81, 0, 0, 0, 0, 0, SOFTMAX, 0, 0, 1);
+  gemmini_loop_ws(6, 6, 0, 15, 15, 0, A, A, 0, C, ATT_S, ATT_S, 0, ATT_S, 0, 0, 0, 0, 0,
+                  SOFTMAX, 0, 0, 1);
 #endif
 #else
+#if ATT_S != 81
+#error "OPT_ATT_STRIDE != 81 needs OPT_SOFTMAX_LOAD"
+#endif
   static const int8_t identity[81 * 81] = {
       [0] = 1, [82] = 1, [164] = 1, [246] = 1, [328] = 1, [410] = 1, [492] = 1, [574] = 1,
       [656] = 1, [738] = 1, [820] = 1, [902] = 1, [984] = 1, [1066] = 1, [1148] = 1,
@@ -441,10 +505,10 @@ static void matmul_attention_g_gspad(const int8_t *A, int8_t *C, float scale) {
 static void matmul_attention_g(const int8_t *A, const int8_t *B, int8_t *C, float scale) {
   gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
   gemmini_extended_config_st(32, NO_ACTIVATION, scale);
-  gemmini_extended3_config_ld(81, 1.0f, false, 0);
+  gemmini_extended3_config_ld(ATT_S, 1.0f, false, 0);
   gemmini_extended3_config_ld(32, 1.0f, false, 1);
   gemmini_extended3_config_ld(32, 1.0f, false, 2);
-  gemmini_loop_ws(6, 2, 6, 15, 0, 15, A, B, 0, C, 81, 32, 32, 32, 0, 0, 0, 0, 0, NO_ACTIVATION,
+  gemmini_loop_ws(6, 2, 6, 15, 0, 15, A, B, 0, C, ATT_S, 32, 32, 32, 0, 0, 0, 0, 0, NO_ACTIVATION,
                   1, 1, 0);
   gemmini_fence();
 }
@@ -463,8 +527,8 @@ static void resadd_relu(float a_scale, float b_scale, float c_scale, const int8_
 // ------------------------------------------------------------------ FC layers
 
 // out[1 x n_out] = in[1 x n_in] * W^T + bias, W is [n_out x n_in] (row-major).
-static void fc_gemmini(const int8_t *in, int n_in, const int8_t *W, const int32_t *bias,
-                       int8_t *out, int n_out, int act, float scale) {
+static void fc_gemmini(const int8_t *in, int n_in, const int8_t *W, uint32_t b_end,
+                       const int32_t *bias, int8_t *out, int n_out, int act, float scale) {
   const int K = (n_in + DIM - 1) / DIM, pad_K = K * DIM - n_in;
   const int J = (n_out + DIM - 1) / DIM, pad_J = J * DIM - n_out;
   gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 1);
@@ -472,16 +536,18 @@ static void fc_gemmini(const int8_t *in, int n_in, const int8_t *W, const int32_
   gemmini_extended3_config_ld(n_in, 1.0f, false, 0);
   gemmini_extended3_config_ld(n_in, 1.0f, false, 1);
   gemmini_extended3_config_ld(1, 1.0f, false, 2);
+  const int b_id = ws_b_region(b_end);
   gemmini_loop_ws(1, J, K, 15, pad_J, pad_K, in, W, bias, out, n_in, n_in, n_out, n_out,
-                  0, 1, 0, 0, 1, act, 1, 1, 0);
+                  0, 1, 0, 0, 1, act, 1, b_id, 0);
   gemmini_fence();
 }
 
 #ifdef OPT_TAIL_ON_CPU
 // Same arithmetic as the Gemmini loop above: int32 accumulation with the bias,
 // then scale_and_sat (round-half-even scaling, saturation, activation).
-static inline void fc_cpu(const int8_t *in, int n_in, const int8_t *W, const int32_t *bias,
-                          int8_t *out, int n_out, int act, float scale) {
+static inline void fc_cpu(const int8_t *in, int n_in, const int8_t *W, uint32_t b_end,
+                          const int32_t *bias, int8_t *out, int n_out, int act, float scale) {
+  (void)b_end;
   for (int o = 0; o < n_out; o++) {
     acc_t acc = bias[o];
     const int8_t *w = W + o * n_in;
@@ -582,7 +648,7 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
 #ifndef OPT_QKV_SPAD_CHAIN  // with it, theta / phi / g live only in the scratchpad
   static int8_t theta[81 * 32] ALIGNED, phi[81 * 32] ALIGNED, g[81 * 32] ALIGNED;
 #endif
-  static int8_t attention_raw[81 * 81] ALIGNED, attention[81 * 81] ALIGNED;
+  static int8_t attention_raw[81 * ATT_S] ALIGNED, attention[81 * ATT_S] ALIGNED;
   static int8_t attended[81 * 32] ALIGNED, nlb_conv_out[81 * 64] ALIGNED, nlb_out[81 * 64] ALIGNED;
   static int8_t conv2_out[49 * 32] ALIGNED, conv3_out[25 * 8] ALIGNED;
 #ifndef OPT_FC1_NO_FLATTEN
@@ -591,12 +657,48 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
   static int8_t fc1_out[16] ALIGNED, fc2_out[8] ALIGNED, fc3_out[4] ALIGNED, fc4_out[2] ALIGNED,
       pred[2] ALIGNED;
 
+#ifdef OPT_WEIGHTS_RESIDENT
+  {
+    // Load the loop_ws layers' weights into their resident regions: the same
+    // loops with a zero input, their outputs discarded.
+    static int8_t wres_a[81 * 64] ALIGNED, wres_c[81 * 64] ALIGNED;
+    qkv_matmul(wres_a, w_theta, WRES_THETA, b_theta, wres_c, 1.0f);
+    qkv_matmul(wres_a, w_phi, WRES_PHI, b_phi, wres_c, 1.0f);
+    qkv_matmul(wres_a, w_g, WRES_G, b_g, wres_c, 1.0f);
+    nlb_out_matmul(wres_a, w_nlb_out, WRES_NLBOUT, b_nlb_out, wres_c, 1.0f);
+    gemmini_fence();
+    fc_gemmini(wres_a, 200, w_fc1, WRES_FC1, b_fc1, wres_c, 16, RELU, 1.0f);
+    fc_gemmini(wres_a, 16, w_fc2, WRES_FC2, b_fc2, wres_c, 8, RELU, 1.0f);
+    fc_gemmini(wres_a, 8, w_fc3, WRES_FC3, b_fc3, wres_c, 4, RELU, 1.0f);
+    fc_gemmini(wres_a, 4, w_fc4, WRES_FC4, b_fc4, wres_c, 2, RELU, 1.0f);
+    fc_gemmini(wres_a, 2, w_out, WRES_OUT, b_out, wres_c, 2, NO_ACTIVATION, 1.0f);
+  }
+#endif
+
   for (int_fast32_t p = 0; p < n_patches; p++) {
     const float *patch = fp32_inputs + p * 121;
     int32_t begin = rdcycle32();
     MARK(0, "start");
 
+#ifdef OPT_QUANT_SERIAL
     for (int i = 0; i < 121; i++) inp[i] = (int8_t)(patch[i] * 127.0f);
+#else
+    // Eight independent load -> fmul -> fcvt chains per step: one at a time the
+    // in-order core waits out each latency (~14 cycles per element).
+    int i = 0;
+    for (; i + 8 <= 121; i += 8) {
+      float f0 = patch[i], f1 = patch[i + 1], f2 = patch[i + 2], f3 = patch[i + 3];
+      float f4 = patch[i + 4], f5 = patch[i + 5], f6 = patch[i + 6], f7 = patch[i + 7];
+      f0 *= 127.0f; f1 *= 127.0f; f2 *= 127.0f; f3 *= 127.0f;
+      f4 *= 127.0f; f5 *= 127.0f; f6 *= 127.0f; f7 *= 127.0f;
+      int32_t q0 = (int32_t)f0, q1 = (int32_t)f1, q2 = (int32_t)f2, q3 = (int32_t)f3;
+      int32_t q4 = (int32_t)f4, q5 = (int32_t)f5, q6 = (int32_t)f6, q7 = (int32_t)f7;
+      inp[i] = (int8_t)q0; inp[i + 1] = (int8_t)q1; inp[i + 2] = (int8_t)q2; inp[i + 3] = (int8_t)q3;
+      inp[i + 4] = (int8_t)q4; inp[i + 5] = (int8_t)q5; inp[i + 6] = (int8_t)q6; inp[i + 7] = (int8_t)q7;
+    }
+    for (; i < 121; i++) inp[i] = (int8_t)(patch[i] * 127.0f);
+#endif
+    MARK(20, "quantize");
 #ifdef OPT_CONV1_IM2COL
     for (int r = 0; r < 9; r++)
       for (int c = 0; c < 9; c++) {
@@ -618,9 +720,9 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
 #ifdef CHIA_DEBUG_SPAD
     if (p < 2) {
       static int8_t rt[81 * 32] ALIGNED, rp[81 * 32] ALIGNED, rg[81 * 32] ALIGNED;
-      qkv_matmul(conv1_out, w_theta, b_theta, rt, nlb_theta_scale[0]);
-      qkv_matmul(conv1_out, w_phi, b_phi, rp, nlb_phi_scale[0]);
-      qkv_matmul(conv1_out, w_g, b_g, rg, nlb_g_scale[0]);
+      qkv_matmul(conv1_out, w_theta, 0u, b_theta, rt, nlb_theta_scale[0]);
+      qkv_matmul(conv1_out, w_phi, 0u, b_phi, rp, nlb_phi_scale[0]);
+      qkv_matmul(conv1_out, w_g, 0u, b_g, rg, nlb_g_scale[0]);
       gemmini_fence();
       qkv_matmul_to_spad(conv1_out, w_theta, b_theta, THETA_SPAD_ROW, nlb_theta_scale[0]);
       qkv_matmul_to_spad(NULL, w_phi, b_phi, PHI_SPAD_ROW, nlb_phi_scale[0]);
@@ -634,13 +736,13 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
     qkv_matmul_to_spad(NULL, w_phi, b_phi, PHI_SPAD_ROW, nlb_phi_scale[0]);
     qkv_matmul_to_spad(NULL, w_g, b_g, G_SPAD_ROW, nlb_g_scale[0]);
 #elif defined(OPT_QKV_LOOP_WS)
-    qkv_matmul(conv1_out, w_theta, b_theta, theta, nlb_theta_scale[0]);
+    qkv_matmul(conv1_out, RES_B(w_theta, WRES_THETA), b_theta, theta, nlb_theta_scale[0]);
 #ifdef OPT_QKV_REUSE_A
-    qkv_matmul(NULL, w_phi, b_phi, phi, nlb_phi_scale[0]);
-    qkv_matmul(NULL, w_g, b_g, g, nlb_g_scale[0]);
+    qkv_matmul(NULL, RES_B(w_phi, WRES_PHI), b_phi, phi, nlb_phi_scale[0]);
+    qkv_matmul(NULL, RES_B(w_g, WRES_G), b_g, g, nlb_g_scale[0]);
 #else
-    qkv_matmul(conv1_out, w_phi, b_phi, phi, nlb_phi_scale[0]);
-    qkv_matmul(conv1_out, w_g, b_g, g, nlb_g_scale[0]);
+    qkv_matmul(conv1_out, RES_B(w_phi, WRES_PHI), b_phi, phi, nlb_phi_scale[0]);
+    qkv_matmul(conv1_out, RES_B(w_g, WRES_G), b_g, g, nlb_g_scale[0]);
 #endif
 #else
     conv1x1(conv1_out, 64, w_theta, b_theta, theta, 32, nlb_theta_scale[0]);
@@ -670,7 +772,8 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
 #endif
     MARK(5, "attention_g");
 #ifdef OPT_NLBOUT_LOOP_WS
-    nlb_out_matmul(attended, w_nlb_out, b_nlb_out, nlb_conv_out, nlb_out_scale[0]);
+    nlb_out_matmul(attended, RES_B(w_nlb_out, WRES_NLBOUT), b_nlb_out, nlb_conv_out,
+                   nlb_out_scale[0]);
 #else
     conv1x1(attended, 32, w_nlb_out, b_nlb_out, nlb_conv_out, 64, nlb_out_scale[0]);
 #endif
@@ -686,17 +789,17 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
     MARK(9, "conv3");
 
 #ifdef OPT_FC1_NO_FLATTEN
-    fc_gemmini(conv3_out, 200, w_fc1, b_fc1, fc1_out, 16, RELU, s_fc1);
+    fc_gemmini(conv3_out, 200, RES_B(w_fc1, WRES_FC1), b_fc1, fc1_out, 16, RELU, s_fc1);
 #else
     for (int ch = 0; ch < 8; ch++)
       for (int pix = 0; pix < 25; pix++) flattened[ch * 25 + pix] = conv3_out[pix * 8 + ch];
-    fc_gemmini(flattened, 200, w_fc1, b_fc1, fc1_out, 16, RELU, s_fc1);
+    fc_gemmini(flattened, 200, RES_B(w_fc1, WRES_FC1), b_fc1, fc1_out, 16, RELU, s_fc1);
 #endif
     MARK(10, "fc1");
-    FC_TAIL(fc1_out, 16, w_fc2, b_fc2, fc2_out, 8, RELU, s_fc2);
-    FC_TAIL(fc2_out, 8, w_fc3, b_fc3, fc3_out, 4, RELU, s_fc3);
-    FC_TAIL(fc3_out, 4, w_fc4, b_fc4, fc4_out, 2, RELU, s_fc4);
-    FC_TAIL(fc4_out, 2, w_out, b_out, pred, 2, NO_ACTIVATION, output_scale[0]);
+    FC_TAIL(fc1_out, 16, RES_B(w_fc2, WRES_FC2), b_fc2, fc2_out, 8, RELU, s_fc2);
+    FC_TAIL(fc2_out, 8, RES_B(w_fc3, WRES_FC3), b_fc3, fc3_out, 4, RELU, s_fc3);
+    FC_TAIL(fc3_out, 4, RES_B(w_fc4, WRES_FC4), b_fc4, fc4_out, 2, RELU, s_fc4);
+    FC_TAIL(fc4_out, 2, RES_B(w_out, WRES_OUT), b_out, pred, 2, NO_ACTIVATION, output_scale[0]);
     MARK(11, "fc2..output");
 
     int32_t end = rdcycle32();

@@ -1,0 +1,42 @@
+diff --git a/src/main/scala/gemmini/LoopMatmul.scala b/src/main/scala/gemmini/LoopMatmul.scala
+index 4554faa..8def8b6 100644
+--- a/src/main/scala/gemmini/LoopMatmul.scala
++++ b/src/main/scala/gemmini/LoopMatmul.scala
+@@ -638,6 +638,9 @@ class LoopMatmulStC(block_size: Int, coreMaxAddrBits: Int, iterator_bitwidth: In
+     (state === ln_config) -> ln_config_norm,
+     (state === ln_st) -> ln_mvout_cmd,
+   ))
++  val trc_cycle = RegInit(0.U(32.W)); trc_cycle := trc_cycle + 1.U
++  when (io.cmd.fire) { printf("TRC lst %d state=%d\n", trc_cycle, state.asUInt) }
++  when (state =/= idle && !io.cmd.fire) { printf("TRC lstw %d state=%d valid=%d rob=%d ex=%d\n", trc_cycle, state.asUInt, io.cmd.valid, io.rob_overloaded, ex_ahead) }
+ 
+   io.loop_id := req.loop_id
+ 
+diff --git a/src/main/scala/gemmini/Normalizer.scala b/src/main/scala/gemmini/Normalizer.scala
+index c49c87c..2acf199 100644
+--- a/src/main/scala/gemmini/Normalizer.scala
++++ b/src/main/scala/gemmini/Normalizer.scala
+@@ -315,6 +315,9 @@ class Normalizer[T <: Data, U <: Data](max_len: Int, num_reduce_lanes: Int, num_
+   io.out.bits.max := stats(out_stats_id).max
+   io.out.bits.inv_stddev := stats(out_stats_id).inv_stddev.asTypeOf(scale_t)
+   io.out.bits.inv_sum_exp := stats(out_stats_id).inv_sum_exp.asTypeOf(scale_t)
++  val trc_cycle = RegInit(0.U(32.W)); trc_cycle := trc_cycle + 1.U
++  when (io.in.fire) { printf("TRC nin %d id=%d cmd=%d\n", trc_cycle, io.in.bits.stats_id, io.in.bits.cmd.asUInt) }
++  when (io.in.valid && !io.in.ready) { printf("TRC nblk %d id=%d cmd=%d\n", trc_cycle, io.in.bits.stats_id, io.in.bits.cmd.asUInt) }
+ 
+   // Lanes and functional units
+   val lanes = Module(new AccumulationLanes(num_stats, acc_t, n_lanes, latency))
+diff --git a/src/main/scala/gemmini/StoreController.scala b/src/main/scala/gemmini/StoreController.scala
+index bad550f..1a4602e 100644
+--- a/src/main/scala/gemmini/StoreController.scala
++++ b/src/main/scala/gemmini/StoreController.scala
+@@ -206,6 +206,9 @@ when (cmd_tracker.io.alloc.fire()) {
+   io.completed.bits := cmd_tracker.io.cmd_completed.bits.tag.rob_id
+ 
+   io.busy := cmd.valid || cmd_tracker.io.busy
++  val trc_cycle = RegInit(0.U(32.W)); trc_cycle := trc_cycle + 1.U
++  when (cmd.fire) { printf("TRC st %d cfg=%d cfgn=%d rows=%d cols=%d norm=%d sid=%d\n", trc_cycle, DoConfig, DoConfigNorm, rows, cols, localaddr.norm_cmd.asUInt, config_stats_id) }
++  when (cmd.valid && !cmd.ready && control_state === waiting_for_command && DoStore && !cmd_tracker.io.alloc.ready) { printf("TRC stfull %d\n", trc_cycle) }
+ 
+   // Row counter
+   when (io.dma.req.fire) {

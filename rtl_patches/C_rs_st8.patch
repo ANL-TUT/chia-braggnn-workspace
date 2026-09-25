@@ -1,0 +1,13 @@
+diff --git a/src/main/scala/gemmini/Configs.scala b/src/main/scala/gemmini/Configs.scala
+index 15b66db..65b8a93 100644
+--- a/src/main/scala/gemmini/Configs.scala
++++ b/src/main/scala/gemmini/Configs.scala
+@@ -54,7 +54,7 @@ object GemminiConfigs {
+ 
+     // Reservation station entries
+     reservation_station_entries_ld = 8,
+-    reservation_station_entries_st = 4,
++    reservation_station_entries_st = 8,
+     reservation_station_entries_ex = 16,
+ 
+     // Ld/Ex/St instruction queue lengths
