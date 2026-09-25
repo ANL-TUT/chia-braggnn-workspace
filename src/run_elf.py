@@ -46,6 +46,8 @@ def run(path: str, timeout: int) -> dict:
         "avg_error": [float(err.group(1)), float(err.group(2))] if err else None,
         "patch_errors": {int(i): (x, y) for i, _, x, y in _PATCH_RE.findall(uart)},
         "marks": [(name, int(c)) for _, name, c in _MARK_RE.findall(uart)],
+        # debug prints of a -DCHIA_DEBUG_* build
+        "debug": [l for l in uart.splitlines() if l.startswith(("spadcheck", "debug"))],
         "uart_tail": uart[-1500:] if not avg else "",
     }
 
@@ -63,6 +65,8 @@ def report(results: list[dict]) -> str:
                      f"patches differing from the first ELF: {diff}/{len(r['patch_errors'])}")
         for name, c in r["marks"]:
             lines.append(f"    {name:16s} {c:8,d}")
+        for l in r.get("debug", []):
+            lines.append(f"    {l}")
     return "\n".join(lines)
 
 

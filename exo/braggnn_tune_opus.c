@@ -41,6 +41,13 @@
 //                       theta and g in bank 2, phi in bank 3, so every loop reads
 //                       A and B from different banks and the qkv stores do not hit
 //                       the banks that the qkv loop itself reads.
+//   OPT_CONV1_MPPR=n    conv1's max_pixels_per_row (first-layer packing of the one
+//                       input channel), 3 by default as in the Exo build.
+//   OPT_NLBOUT_LOOP_WS  the NLB output 1x1 conv (81x32 * 32x64 + bias) as a
+//                       loop_ws matmul instead of loop_conv_ws.
+//   OPT_CONV2_SPLIT=n   conv2 as n loop_conv_ws calls of 32/n output channels each
+//                       (weights / bias / output offset, same strides), so the loop
+//                       unit can load one while the other computes.
 //   OPT_CONV1_IM2COL    conv1 (one input channel) as a matmul: the CPU writes the
 //                       quantized input straight into an 81x16 im2col matrix
 //                       (9 taps, zero-padded), Gemmini multiplies it by the
@@ -51,7 +58,7 @@
 //
 // Default: the best measured combination (FireSim, predictions identical to
 // the seed's): OPT_FC1_NO_FLATTEN + OPT_SOFTMAX_LOAD + OPT_SOFTMAX_ONE_LOAD +
-// OPT_QKV_LOOP_WS + OPT_QKV_REUSE_A, 34,092 cycles/patch against 39,953 for
+// OPT_QKV_LOOP_WS + OPT_QKV_REUSE_A + OPT_NLBOUT_LOOP_WS, 34,028 cycles/patch against 39,953 for
 // OPT_BASELINE (the Exo build's calls). OPT_CONV1_IM2COL (+2.2k in conv1) and
 // OPT_TAIL_ON_CPU (slower than four tiny Gemmini loops) measured worse, and
 // OPT_NLB_SPAD_CHAIN (29,652) changes the predictions (9 of 10 patches), so
@@ -62,6 +69,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "braggnn_schedule.h"
@@ -72,6 +80,7 @@
 #define OPT_SOFTMAX_ONE_LOAD
 #define OPT_QKV_LOOP_WS
 #define OPT_QKV_REUSE_A
+#define OPT_NLBOUT_LOOP_WS
 #endif
 
 #ifdef CHIA_LAYER_MARKS
@@ -129,23 +138,33 @@ static inline int32_t rdcycle32(void) {
 
 // ---------------------------------------------------------------- conv layers
 
+#ifndef OPT_CONV1_MPPR
+#define OPT_CONV1_MPPR 3
+#endif
+
 static void conv1(const int8_t *inp, const int8_t *w, const int32_t *bias,
                   int8_t *out, float scale) {
   gemmini_extended_config_st(64, NO_ACTIVATION, scale);
   gemmini_extended3_config_ex(WEIGHT_STATIONARY, 0, 0, 0, 1, 1, 0, 0, 0);
   gemmini_loop_conv_ws(1, 11, 11, 1, 64, 9, 9, 9, 9, 1, 0, 3, 1, 1, 1, 0, 1, 9, 9, 64, 3, 3, 1,
                        0, 0, 0, 0, 0, 0, 0, 0, 9, 9, w, out, bias, inp, 0, 1, 0, 0, 0,
-                       NO_ACTIVATION, 0, 0, 0, 0, 3, 1, 64, 64, 0, 1, 1);
+                       NO_ACTIVATION, 0, 0, 0, 0, OPT_CONV1_MPPR, 1, 64, 64, 0, 1, 1);
   gemmini_fence();
 }
+
+#ifndef OPT_CONV2_SPLIT
+#define OPT_CONV2_SPLIT 1
+#endif
 
 static void conv2(const int8_t *inp, const int8_t *w, const int32_t *bias,
                   int8_t *out, float scale) {
   gemmini_extended_config_st(32, RELU, scale);
   gemmini_extended3_config_ex(WEIGHT_STATIONARY, 0, 0, 0, 1, 1, 0, 0, 0);
-  gemmini_loop_conv_ws(1, 9, 9, 64, 32, 7, 7, 7, 7, 1, 0, 3, 1, 1, 1, 0, 1, 7, 7, 32, 3, 3, 64,
-                       0, 0, 0, 0, 0, 0, 0, 0, 7, 7, w, out, bias, inp, 0, 1, 0, 0, 0,
-                       RELU, 0, 0, 0, 0, 1, 64, 32, 32, 0, 1, 1);
+  const int och = 32 / OPT_CONV2_SPLIT;
+  for (int s = 0; s < OPT_CONV2_SPLIT; s++)
+    gemmini_loop_conv_ws(1, 9, 9, 64, och, 7, 7, 7, 7, 1, 0, 3, 1, 1, 1, 0, 1, 7, 7, och, 3, 3, 64,
+                         0, 0, 0, 0, 0, 0, 0, 0, 7, 7, w + s * och, out + s * och, bias + s * och,
+                         inp, 0, 1, 0, 0, 0, RELU, 0, 0, 0, 0, 1, 64, 32, 32, 0, 1, 1);
   gemmini_fence();
 }
 
@@ -184,7 +203,7 @@ static void conv1x1(const int8_t *inp, int in_ch, const int8_t *w, const int32_t
                        0, NO_ACTIVATION, 0, 0, 0, 0, 1, in_ch, out_ch, out_ch, 0, 1, 1);
 }
 
-#ifdef OPT_QKV_LOOP_WS
+#if defined(OPT_QKV_LOOP_WS)
 // The same 1x1 conv as a matmul: C[81 x 32] = A[81 x 64] * W[64 x 32] + bias,
 // the bias a repeating D row (D stride 0), as tiled_matmul_outer issues it.
 // A second call with inp == NULL reuses the A that the previous call left in
@@ -198,6 +217,20 @@ static void qkv_matmul(const int8_t *inp, const int8_t *w, const int32_t *bias, 
   gemmini_extended3_config_ld(0, 1.0f, false, 2);
   // I = 6 tiles of 81 rows (pad 15), J = 2 tiles of 32, K = 4 tiles of 64.
   gemmini_loop_ws(6, 2, 4, 15, 0, 0, inp, w, bias, out, 64, 32, 0, 32,
+                  0, 0, 0, 0, 1, NO_ACTIVATION, 1, 1, 0);
+}
+#endif
+
+#ifdef OPT_NLBOUT_LOOP_WS
+// NLB output conv as a matmul: C[81 x 64] = A[81 x 32] * W[32 x 64] + bias.
+static void nlb_out_matmul(const int8_t *inp, const int8_t *w, const int32_t *bias, int8_t *out,
+                           float scale) {
+  gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
+  gemmini_extended_config_st(64, NO_ACTIVATION, scale);
+  gemmini_extended3_config_ld(32, 1.0f, false, 0);
+  gemmini_extended3_config_ld(64, 1.0f, false, 1);
+  gemmini_extended3_config_ld(0, 1.0f, false, 2);
+  gemmini_loop_ws(6, 4, 2, 15, 0, 0, inp, w, bias, out, 32, 64, 0, 64,
                   0, 0, 0, 0, 1, NO_ACTIVATION, 1, 1, 0);
 }
 #endif
@@ -224,6 +257,31 @@ static void qkv_matmul_to_spad(const int8_t *inp, const int8_t *w, const int32_t
                            ((uint64_t)1 << 18) | ((uint64_t)1 << 16) |
                                ((uint64_t)NO_ACTIVATION << 8) | 1 /* ex_accumulate: bias */,
                            ((uint64_t)dst_row << 32) | LOOP_SPAD_ONLY, k_LOOP_WS);
+}
+#endif
+
+#if defined(CHIA_DEBUG_SPAD) && defined(OPT_QKV_SPAD_CHAIN)
+// Debug only: copy an 81x32 matrix that qkv_matmul_to_spad left in the
+// scratchpad back to DRAM (plain mvout from scratchpad rows) and count bytes
+// that differ from the DRAM-path result.
+static int spad_vs_dram(uint32_t row, const int8_t *ref, const char *name) {
+  static int8_t chk[96 * 32] ALIGNED;
+  memset(chk, 0x55, sizeof(chk));
+  gemmini_fence();
+  gemmini_extended_config_st(32, NO_ACTIVATION, 1.0f);
+  for (int i = 0; i < 6; i++)
+    for (int j = 0; j < 2; j++) {
+      int rows = i == 5 ? 1 : 16;
+      gemmini_extended_mvout(chk + (i * 16) * 32 + j * 16, row + (i * 2 + j) * 16, 16, rows);
+    }
+  gemmini_fence();
+  int diff = 0, first = -1;
+  for (int k = 0; k < 81 * 32; k++)
+    if (chk[k] != ref[k]) { if (first < 0) first = k; diff++; }
+  printf("spadcheck %s: %d/%d bytes differ", name, diff, 81 * 32);
+  if (first >= 0) printf(" (first at %d: spad %d vs dram %d)", first, chk[first], ref[first]);
+  printf("\n");
+  return diff;
 }
 #endif
 
@@ -479,6 +537,39 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
   STAGE(w_fc1, fc1_weights);
 #endif
 
+#ifdef CHIA_DEBUG_MVOUT_SPAD
+  {
+    // (1) mvin int8 -> scratchpad row, mvout scratchpad -> DRAM.
+    // (2) mvin int8 -> accumulator, mvout_spad accumulator -> scratchpad row,
+    //     then mvout that scratchpad row -> DRAM.
+    static int8_t src[16 * 16] ALIGNED, out1[16 * 16] ALIGNED, out2[16 * 16] ALIGNED;
+    for (int k = 0; k < 256; k++) src[k] = (int8_t)(k % 97 - 48);
+    memset(out1, 0x55, 256); memset(out2, 0x55, 256);
+    const uint32_t sp_row = 3 * 4096 + 1024, sp_row2 = 2 * 4096 + 1024;
+    const uint32_t acc_row = (uint32_t)1 << 31;  // accumulator address, overwrite
+    gemmini_extended3_config_ld(16, 1.0f, false, 0);
+    gemmini_mvin(src, sp_row);
+    gemmini_extended_config_st(16, NO_ACTIVATION, 1.0f);
+    gemmini_mvout(out1, sp_row);
+    gemmini_fence();
+    gemmini_extended4_config_ld(16, 1.0f, true, DIM, 0);
+    gemmini_mvin(src, acc_row);
+    gemmini_extended_config_st(16, NO_ACTIVATION, 1.0f);
+    gemmini_extended_mvout_spad(sp_row2, 1, acc_row, 16, 16);
+    gemmini_fence();
+    gemmini_mvout(out2, sp_row2);
+    gemmini_fence();
+    int d1 = 0, d2 = 0, f2 = -1;
+    for (int k = 0; k < 256; k++) {
+      d1 += out1[k] != src[k];
+      if (out2[k] != src[k]) { d2++; if (f2 < 0) f2 = k; }
+    }
+    printf("debug spad mvin/mvout: %d/256 differ\n", d1);
+    printf("debug acc -> mvout_spad -> spad -> mvout: %d/256 differ", d2);
+    if (f2 >= 0) printf(" (first at %d: got %d, want %d)", f2, out2[f2], src[f2]);
+    printf("\n");
+  }
+#endif
   const float s_conv2 = conv2_scale[0] * conv2_post_scale[0];
   const float s_conv3 = conv3_scale[0] * conv3_post_scale[0];
   const float s_fc1 = fc1_scale[0] * fc1_post_scale[0];
@@ -524,6 +615,21 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
     // NLB: the three 1x1 convs read the same input and are independent, so
     // one fence covers all three.
 #if defined(OPT_QKV_SPAD_CHAIN)
+#ifdef CHIA_DEBUG_SPAD
+    if (p < 2) {
+      static int8_t rt[81 * 32] ALIGNED, rp[81 * 32] ALIGNED, rg[81 * 32] ALIGNED;
+      qkv_matmul(conv1_out, w_theta, b_theta, rt, nlb_theta_scale[0]);
+      qkv_matmul(conv1_out, w_phi, b_phi, rp, nlb_phi_scale[0]);
+      qkv_matmul(conv1_out, w_g, b_g, rg, nlb_g_scale[0]);
+      gemmini_fence();
+      qkv_matmul_to_spad(conv1_out, w_theta, b_theta, THETA_SPAD_ROW, nlb_theta_scale[0]);
+      qkv_matmul_to_spad(NULL, w_phi, b_phi, PHI_SPAD_ROW, nlb_phi_scale[0]);
+      qkv_matmul_to_spad(NULL, w_g, b_g, G_SPAD_ROW, nlb_g_scale[0]);
+      spad_vs_dram(THETA_SPAD_ROW, rt, "theta");
+      spad_vs_dram(PHI_SPAD_ROW, rp, "phi");
+      spad_vs_dram(G_SPAD_ROW, rg, "g");
+    }
+#endif
     qkv_matmul_to_spad(conv1_out, w_theta, b_theta, THETA_SPAD_ROW, nlb_theta_scale[0]);
     qkv_matmul_to_spad(NULL, w_phi, b_phi, PHI_SPAD_ROW, nlb_phi_scale[0]);
     qkv_matmul_to_spad(NULL, w_g, b_g, G_SPAD_ROW, nlb_g_scale[0]);
@@ -563,7 +669,11 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
 #endif
 #endif
     MARK(5, "attention_g");
+#ifdef OPT_NLBOUT_LOOP_WS
+    nlb_out_matmul(attended, w_nlb_out, b_nlb_out, nlb_conv_out, nlb_out_scale[0]);
+#else
     conv1x1(attended, 32, w_nlb_out, b_nlb_out, nlb_conv_out, 64, nlb_out_scale[0]);
+#endif
     gemmini_fence();
     MARK(6, "nlb_out_conv");
     resadd_relu(nlb_add_b_scale[0], nlb_add_a_scale[0], resadd_post_scale[0], conv1_out,

@@ -70,7 +70,14 @@ def bash(script: str, timeout: int) -> subprocess.CompletedProcess:
     # --skip-ssh-setup, as FireSim's own runtime_config.py does: without it,
     # deploy/ssh-setup.sh starts a fresh ssh-agent whenever it cannot reach one.
     # The node's worker_env_commands already load ~/.ssh/AGENT_VARS.
-    prefix = f"cd {FIRESIM_DIR} && source sourceme-manager.sh --skip-ssh-setup && "
+    # $CHIPYARD_PATH/env.sh first: it activates that checkout's conda env, so
+    # a job pointed at another chipyard (CHIPYARD_PATH in its runtime env) runs
+    # FireSim with that checkout's tools, not the Ray worker's startup env.
+    # sourceme-manager.sh appends deploy/ to PATH, after the worker's own
+    # checkout's, so put this checkout's firesim manager first explicitly.
+    prefix = (f"source {CHIPYARD_PATH}/env.sh && "
+              f"cd {FIRESIM_DIR} && source sourceme-manager.sh --skip-ssh-setup && "
+              f"export PATH={FIRESIM_DIR}/deploy:$PATH && ")
     return subprocess.run(
         ["bash", "-l", "-c", prefix + script],
         capture_output=True,
@@ -80,20 +87,37 @@ def bash(script: str, timeout: int) -> subprocess.CompletedProcess:
     )
 
 
+CHIA_RUNTIME_CONFIG = f"{FIRESIM_DEPLOY_DIR}/config_runtime_chia.yaml"
+
+
+def chia_runtime_config() -> str:
+    """A copy of the checkout's config_runtime.yaml whose workload is the
+    chia-bare workload stage_bare_workload writes. FireSim otherwise runs
+    whatever workload that checkout's config names, which silently measures
+    some other program. Written next to the original (deploy/)."""
+    text = Path(FIRESIM_CONFIG_RUNTIME_PATH).read_text()
+    text, n = re.subn(r"(?m)^(\s*workload_name:\s*)\S+", r"\g<1>chia-bare.json", text, count=1)
+    if n != 1:
+        raise RuntimeError(f"no workload_name line in {FIRESIM_CONFIG_RUNTIME_PATH}")
+    Path(CHIA_RUNTIME_CONFIG).write_text(text)
+    return CHIA_RUNTIME_CONFIG
+
+
 @ChiaFunction(resources={"FPGA": 1})
 def run_workload(elf: bytes, timeout_seconds: int = 14400) -> RunResult:
     stage_bare_workload(elf)
+    runtime = chia_runtime_config()
 
     try:
         done = bash(
-            f"firesim infrasetup -a {HWDB} -r {BUILD_RECIPES} && "
-            f"firesim runworkload -a {HWDB} -r {BUILD_RECIPES}",
+            f"firesim infrasetup -c {runtime} -a {HWDB} -r {BUILD_RECIPES} && "
+            f"firesim runworkload -c {runtime} -a {HWDB} -r {BUILD_RECIPES}",
             timeout_seconds,
         )
         returncode, stdout, stderr = done.returncode, done.stdout, done.stderr
     except subprocess.TimeoutExpired as expired:
         returncode = 124
-        killed = bash(f"firesim kill -a {HWDB} -r {BUILD_RECIPES}", 600)
+        killed = bash(f"firesim kill -c {runtime} -a {HWDB} -r {BUILD_RECIPES}", 600)
         stdout = f"{expired.stdout or ''}{killed.stdout}"
         stderr = f"{expired.stderr or ''}{killed.stderr}"
 
