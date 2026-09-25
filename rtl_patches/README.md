@@ -5,7 +5,7 @@ Patches against gemmini4xraymodels 771d30f (`generators/gemmini`). No ISA file
 gemmini_params.h is unchanged. Every accepted step printed exactly the seed's
 per-patch prediction errors on Verilator (`src/verilator_elf.py`).
 
-`combined_A-L.patch` is the accepted set in one diff (what the firesim node's
+`combined_A-M.patch` is the accepted set in one diff (what the firesim node's
 tree carries); the single-step files are relative to the step before them.
 
 Verilator, current-best C (warm cycles/patch; 2-patch runs up to G, 4-patch after):
@@ -23,6 +23,7 @@ Verilator, current-best C (warm cycles/patch; 2-patch runs up to G, 4-patch afte
 | (SW) | - | `OPT_ATT_STRIDE=128` in the C file (aligned 81x81 rows) | 28,830 |
 | K | K_inflight64 | `max_in_flight_mem_reqs` 16 -> 64 (Load/StoreController commands in flight 2 -> 5) | 27,841 |
 | L | L_rs_st_spad_opb | bug fix: the RS kept no accumulator source for mvout_spad entries (opb wiped for all ld/st entries), so a later compute could overwrite accumulator rows a mvout_spad was still reading (AccumulatorMem "reading from and writing to same address" assertion in the qkv scratchpad chain) | 23,834 (unchanged) |
+| M | M_dma_writer_pipelined | StreamWriter gathers the next row's blocks while it writes the current row (a 2-row queue between block gathering and the TileLink state machine) | 23,834 -> 23,481 (C file as of 4198f6c) |
 
 With L the C file's OPT_QKV_SPAD_CHAIN runs bit-exact, but slower than the
 DRAM path (26,164 vs 25,780 with the same other flags): mvout_spad stores

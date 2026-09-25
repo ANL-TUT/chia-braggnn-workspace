@@ -87,7 +87,7 @@
 // cycles/patch (from here on the timing excludes the input quantization, which
 // the seed's and OPT_BASELINE's numbers include: ~1,750 cycles one at a time).
 // OPT_CONV2_RESIDENT: 24,483 cycles/patch; OPT_CONV1_WINDOW: 24,056;
-// OPT_CONV3_RESIDENT: 23,834.
+// OPT_CONV3_RESIDENT: 23,834; 23,481 with rtl_patches/ M (pipelined DMA writer).
 // OPT_CONV1_IM2COL (+2.2k in conv1) and OPT_TAIL_ON_CPU (slower than four tiny
 // Gemmini loops; a version with all outputs accumulating at once and fcvt
 // rounding was slower still: 2,127 vs 848 cycles) measured worse,
