@@ -1,0 +1,20 @@
+[project]
+name = "chia-braggnn-workspace"
+version = "0.1.0"
+requires-python = "==3.10.19"
+dependencies = [
+    "alpha-evolve",
+    "chialoops==1.0.1",
+    "evolve-flows",
+    "skydiscover",
+]
+
+[tool.uv.sources]
+alpha-evolve = { git = "https://github.com/Google-Cloud-AI/alphaevolve-on-googlecloud.git", rev = "b51ab7a6446d0168bf6db52c6dccbec414a21b3f" }
+evolve-flows = { git = "ssh://git@github.com/ANL-TUT/evolve-flows.git", rev = "4f913a8453be130c7b00916a4d9129fd142e02ab" }
+skydiscover = { git = "ssh://git@github.com/ANL-TUT/skydiscover.git", rev = "48690d9e0c850fc55f1cf95a6544f178adf3ddf7" }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.7",
+]

@@ -1,0 +1,354 @@
+# AlphaEvolve config.
+# Uses Google's AlphaEvolve cloud API as the search backend.
+#
+# Usage:  python chia/braggnn_alphaevolve_loop.py --config config_alphaevolve.yaml
+
+max_iterations: 10        # SW search budget (maps to max_programs_evaluated in the backend)
+log_level: "INFO"
+file_suffix: ".py"
+
+search:
+  type: "alphaevolve"
+  # Islands / MAP-Elites are managed server-side by AlphaEvolve;
+  # no client-side island config (cf. search.database.num_islands in AdaEvolve).
+
+# AlphaEvolve backend settings (parsed by the bridge from raw YAML,
+# since Config.from_dict drops unknown top-level sections).
+alphaevolve:
+  project_id: "GOOGLE_CLOUD_PROJECT"
+  engine_id: "GE_APP_ID"
+  credentials_file: ""
+  concurrency: 3          # server-side: programs generated in parallel (sweet spot: 3-12)
+  num_samplers: 1         # client-side: async tasks polling for new candidates
+  num_evaluators: 3       # client-side: async tasks running evaluations concurrently
+  idle_timeout_s: 7200    # one evaluation (exocc + build + FireSim infrasetup/runworkload) can exceed 30 min
+  # Parent sampling from the Pareto frontier of combined_score and the
+  # per-layer-group speedups (result_mapper.py's speedup_<group>, sent once
+  # SEED_LAYER_CYCLES is measured), so a candidate that sped up one part of
+  # the network survives as a parent even before the total improves. The
+  # backend drops this key; chia/ae_backend_patch.py passes it through.
+  evolution_settings:
+    parent_sampling_config:
+      pareto_sampling_config:
+        pareto_sampling_probability: 0.3
+  problem_description: |
+    ## Role
+
+    You are an expert in the Exo user-schedulable language
+    (https://github.com/exo-lang/exo) and in performance tuning of C kernels
+    for RISC-V CPUs and Gemmini accelerators. You optimize software for the
+    currently deployed FireSim/Gemmini configuration. You cannot change the
+    hardware and must not assume it will adapt to your schedule.
+
+    ## Task
+
+    Minimize the average cycle count per BraggNN inference. Your Exo program
+    (braggnn_schedule.py) is compiled with `exocc` to C, linked with a fixed
+    C harness (braggnn_main.c) and the Gemmini allocators, and run bare-metal
+    on a FireSim Rocket core (RV64GC, no vector extension) with that Gemmini
+    accelerator (RoCC, DIM=16). The harness times every patch with `rdcycle`
+    and checks the prediction error. The score is the average cycles per patch;
+    lower is better. Anything that fails to compile or link, exceeds 0.5 px
+    average prediction error, or hangs scores nothing.
+
+    The candidate must stay valid for `exocc` from Exo commit `defe172`.
+
+    ## The program you are given
+
+    The seed is a complete, correct, already Gemmini-offloaded BraggNN
+    implementation, in two parts:
+    - Above the EVOLVE-BLOCK markers: imports of the reference specs
+      (`braggnn_reference`: the `*_cpu` procs, including `nlb_cpu`,
+      `braggnn_inference_cpu` and `braggnn_eval_cpu`) and of the Gemmini
+      instruction helpers (`from gemmini import ...`). NEVER edit these.
+      The algorithm is fixed; you tune only how it is scheduled.
+    - Between EVOLVE-BLOCK-START and EVOLVE-BLOCK-END: the scheduling. Each
+      `sched_*` function specializes an `*_cpu` proc and `replace`s its loop
+      nest with a Gemmini hardware-loop instruction built by a `make_loop_*`
+      helper (a plain loop nest in Exo and one `gemmini_loop_*` instruction
+      sequence in C), and fences once at the end. `schedule_nlb` and
+      `schedule_braggnn` swap those scheduled procs into `nlb` and
+      `braggnn_inference` with `call_eqv`, and `schedule_eval` renames
+      `braggnn_eval_cpu` to `braggnn_eval`, `call_eqv`s in your
+      `braggnn_inference` and inlines it into the per-patch loop. The block
+      ends by binding `braggnn_eval`. Change only this region. `schedule_eval`
+      must keep its `rename` / `call_eqv` / `inline` as they are, and the
+      final binding of `braggnn_eval` to your scheduled proc must stay:
+      `braggnn_eval` is what `exocc` compiles and what the harness calls.
+    - Below the EVOLVE-BLOCK-END marker: `__all__ = ["braggnn_eval"]`. NEVER
+      edit it.
+
+    The `gemmini` module (source appended below) is the hardware instruction
+    library: fixed and not yours to edit. Exo guarantees that every
+    scheduling operation preserves the program's meaning; the C inside an
+    `@instr` is the one thing Exo cannot check.
+
+    The library's instrs are one way to drive Gemmini, not the only one. You
+    may define your own instrs inside the EVOLVE-BLOCK (`@instr(c_string)` on
+    a `@proc`-style function, or `make_instr(proc, c_string, c_global)` from
+    `exo.API_scheduling` to give an existing instr's semantics new C), with any
+    Gemmini command sequence as the C: see "The Gemmini hardware loop" below
+    and the gemmini.h excerpt appended at the end. The body is the semantics
+    `replace` matches against, so it must be exactly the loop nest the C
+    computes. Because Exo cannot check the C, the harness checks the result:
+    every candidate's int8 predictions must equal the seed's exactly (see
+    "What is measured").
+
+    ## Read-only reference schedules and measured lessons
+
+    The repository also contains two read-only schedules of the same algorithm.
+    They are references only: do not submit either one or assume that replacing
+    the seed wholesale with one of them is an optimization.
+
+    - `braggnn_schedule_lowlevel.py` schedules every operator except softmax
+      down to Gemmini's low-level `ld_i8` / `matmul_acc_i8` / `st_acc_i8`
+      style instructions on `GEMM_SCRATCH` and `GEMM_ACCUM`. It measures about
+      352k cycles versus 45k for the seed because the CPU issues every tile
+      instead of using Gemmini's hardware loop unroller. Its useful idea is
+      selective fusion: a low-level operator can leave a result in scratchpad
+      for the next operator, avoiding a DRAM round trip that the whole-layer
+      loop macros always perform.
+    - `braggnn_schedule_fusion.py` keeps the loop macros for conv1, the NLB and
+      the fully connected layers, but lowers conv2 and conv3. It measures
+      48,113 cycles versus 45,170 for the seed, so it is also slower overall.
+      Its useful ideas are more targeted:
+        - A weight-stationary matmul command costs about 17 cycles regardless
+          of N because preload pushes 16 rows into the array. With one output
+          row per column position, N is only 7 and utilization is 7/17. Stage
+          input once per kernel column, merge `(orow, ocol)` into one axis with
+          `mult_dim` plus `mult_loops`, fold the resulting div/mod expressions
+          with `rewrite_expr`, then tile that axis by 16. This reduces conv2
+          from 504 matmul pairs to 288 and conv3 from 90 to 36.
+        - Lift config writes out of loops with the `*_v2` instructions using
+          `call_eqv`, `inline`, and fission. The newer `fission` refuses to
+          separate a config write from the instruction that reads it, so the
+          store config uses `old_fission_after`; neither requires an unsafe
+          option.
+        - Fixed-address `Memory` subclasses can hold Gemmini scratchpad data,
+          and transposing weights once before the patch loop can let one mvin
+          transfer four blocks at a time.
+
+    Three measured constraints are especially important:
+
+    - An i32 accumulator mvin must stay at 16 columns or fewer. A multi-block
+      one hangs this accelerator because its DMA byte counter is 6 bits wide.
+    - Moving per-patch work, such as a scratchpad weight load, outside the
+      `for p` loop is invalid amortization rather than a real speedup, even if
+      it lowers the number printed by the harness.
+    - The fence between two dependent layers is required for correctness.
+      Each layer reads the DRAM output of the layer before it, and Gemmini
+      does not by itself hold the next layer's mvin until the previous
+      layer's mvout has landed; Exo cannot see this, because to Exo a fence
+      does not change the computation. Candidates that removed every fence but
+      the final one ran at about 37,400 cycles but changed every prediction
+      (0.64-0.79 px error) and scored 0. Only fences between independent
+      operations can go: the three `nlb_qkv_conv` projections all read the
+      same input, so one fence after the third is enough.
+
+    `braggnn_schedule.py` is the only program compiled, measured and scored.
+    Any useful reference idea must be expressed in that candidate through
+    equivalence-preserving Exo scheduling.
+
+    ## What is measured
+
+    `braggnn_eval` loops over the test patches and, for each one, reads the
+    `rdcycle` extern, runs the inlined `braggnn_inference`, reads `rdcycle`
+    again and stores `cycles[p] = end - begin`. That bracketed region is what
+    you are scored on. No computation may cross the two `rdcycle` calls or
+    leave the `for p` loop: hoisting per-patch work out of the loop only
+    amortizes it over the test set, is not a speedup, and is treated as a
+    broken candidate. Because `braggnn_inference` is inlined into the patch
+    loop, every intermediate buffer is an allocation of `braggnn_eval`, so
+    `expand_dim` / `mult_dim` can reshape them there.
+
+    The harness then checks correctness exactly: the int8 predictions of all
+    test patches must equal the seed's, or the candidate scores 0 (the
+    insight says how many patches differ). This catches a wrong instr C
+    string or a missing fence even when the error stays under 0.5 px.
+
+    It also runs `braggnn_eval` a second time to profile it: the reference
+    specs contain `layer_mark(id)` calls (from `gemmini`) after every layer,
+    which cost a load and a branch in the scored pass and in the profiling
+    pass fence Gemmini and record the cycles since the previous mark. The
+    per-layer cycles come back as the `layer_profile` insight of every
+    measured candidate: use it to see where the time goes and whether a
+    change sped up the layer it targeted. Keep the `layer_mark` calls where
+    they are; a moved or deleted mark only makes the profile wrong.
+
+    What you may do at the `braggnn_eval` level is reshape or relocate the
+    staged weight buffers (`mult_dim`, `rearrange_dim`, `set_memory` and the
+    like), because `braggnn_eval` is the only place where they are allocations
+    rather than arguments, and Exo refuses those operations on arguments. That
+    is what the staging before the patch loop is for. (Merely folding
+    `fc1_weights_` into i8[16, 200] gains nothing: `make_loop_matmul_fc`
+    already treats `in_ch * in_h * in_w` as one K axis of 200.)
+
+    ## Hard rules
+
+    - Numerical results must stay identical to the seed: same quantization
+      scales, activations, and rounding points. The harness enforces this
+      bit for bit on the predictions.
+    - Do not change `braggnn_reference.py`; its `*_on_cpu` procedures and
+      composition procedures are the specification that the schedule must
+      remain equivalent to.
+    - Do not change `gemmini.py`. Write new instrs inside the EVOLVE-BLOCK
+      instead; they travel with your program. An instr's C must compute what
+      its body says from its actual arguments on every call: no hard-coded
+      or cached results, no work skipped because the test inputs happen to
+      allow it, no writes to anything outside its arguments except Gemmini
+      state that a later instr of yours reads.
+    - Never use `unsafe_assert_eq`, `unsafe_disable_check`/
+      `unsafe_disable_checks`, or any `unsafe_*` operation, and never construct
+      or rewrite `LoopIR` (or `_loopir_proc`) directly: they bypass the
+      equivalence checks that guarantee correctness. Candidates containing them
+      are rejected without being built.
+    - Any name you use that the seed did not already import (for example
+      `unroll_loop`, `fuse`, `reorder_loops`, `stage_mem`, `bind_expr`,
+      `expand_dim`, `set_memory`, `lift_alloc`) MUST be imported by you, inside
+      the EVOLVE-BLOCK. Names imported above the block are only the few the
+      seed uses (`call_eqv`, `divide_loop`, `inline`, `insert_noop_call`,
+      `rename`, `replace`, `simplify`). A missing or wrong import is the most
+      common way candidates fail.
+    - Import scheduling operations from `exo.API_scheduling`, exactly like the
+      seed does:
+          from exo.API_scheduling import unroll_loop, fuse, reorder_loops, set_memory
+      Do NOT write `from exo import unroll_loop` (or any scheduling operation
+      from the top-level `exo` package): it raises "ImportError: cannot import
+      name". Memory classes come from `exo.libs.memories` (for example
+      `from exo.libs.memories import DRAM_STATIC`), and the Gemmini
+      instruction helpers only from the `gemmini` module.
+    - `braggnn_eval` must keep exactly the same arguments, order, types and
+      shapes: the fixed C harness calls it.
+    - No heap allocation: this is bare-metal code. The seed's intermediate
+      buffers are `DRAM_STATIC`. Buffers that your scheduling creates
+      (`stage_mem`, `bind_expr`, `expand_dim`, ...) default to `DRAM`, which Exo
+      emits as `malloc`/`free`. Move every new CPU-side buffer to `DRAM_STATIC`
+      with `set_memory` right after creating it, unless it belongs on a Gemmini
+      memory (`GEMM_SCRATCH` / `GEMM_ACCUM`). A candidate whose generated C
+      calls `malloc` or `free` fails to link.
+    - Every `@proc` the seed replaces by a hardware instruction must stay
+      replaced. In particular the reference `nlb_softmax_cpu` computes `expf`
+      on the CPU; leaving it in the final program makes `expf` an undefined
+      reference at link time and the candidate fails.
+
+    ## How to write scheduling code that works
+
+    - Cursors go stale. After every scheduling operation, re-find what you need
+      (`p.find_loop("i1o")`, `p.find(...)`); never reuse a cursor from before a
+      rewrite. Reusing one raises InvalidCursorError. Likewise, never look up a
+      loop by a name that an earlier step already consumed or renamed (for
+      example `find_loop("i1")` after `divide_loop` split `i1` into `i1o`/`i1i`):
+      it raises "failed to find matches".
+    - Buffer-shape operations take dimension *indices* (0-based positions in
+      the shape), never sizes: `mult_dim(p, buf, hi_dim_idx, lo_dim_idx)`,
+      `divide_dim(p, buf, dim_idx, quotient)`, `rearrange_dim(p, buf,
+      permutation)`. For `x : i8[16, 8, 5, 5]`, `mult_dim(p, "x : _", 2, 3)`
+      gives `i8[16, 8, 25]` and then `mult_dim(p, "x : _", 1, 2)` gives
+      `i8[16, 200]`. Passing a size such as 5 raises "Cannot multiply
+      out-of-bounds dimension index 5".
+    - Check that a loop exists before scheduling it. `find`/`find_loop` on a
+      pattern that has no match raises SchedulingError.
+    - `divide_loop` with a factor that does not divide the loop bound leaves a
+      tail loop (with `tail="cut"`); with a factor that divides it there is no
+      tail, and with a factor at least as large as the bound the main loop
+      disappears. Code that uses `.next()` or `find_loop` on the divided loops
+      must match which of these cases actually occurs.
+    - `replace(p, loop, instr)` only succeeds when the loop nest has exactly
+      the shape and semantics of the instr's body. To use a different tile size
+      or fusion, build the matching `make_loop_*` instr with new arguments or
+      reshape the loops to match; do not hack the helper.
+    - `fuse(a, b)` requires the two loops to be statement-adjacent, with
+      nothing (not even an allocation) between them. Inspect what follows a loop
+      (`.after()`) and `inline` a call in between first if needed.
+    - Size and offset arithmetic must be integer arithmetic. Use `//`, never
+      `/`: a float reaches the generated C as an array index and the C compile
+      fails with "array subscript is not an integer".
+    - To place intermediate buffers in another memory, use cursors, not the
+      IR: `p = set_memory(p, p.find_alloc_or_arg("fc1_out"), DRAM_STATIC)`,
+      repeated per buffer name.
+    - Change one thing at a time and build on the best candidate so far. A
+      candidate that fails in one place is worth nothing, so prefer small,
+      certain edits over large rewrites.
+
+    ## Levers
+
+    Read the `layer_profile` insight first and spend effort where the cycles
+    are. Every layer already runs as one whole-layer Gemmini hardware loop,
+    so the big gains come from what Gemmini is asked to do, not from the CPU
+    code around it. Roughly in order of promise:
+    - The Gemmini command sequence itself. The seed's `make_loop_*` instrs
+      are one fixed choice per operator; an operator can often be issued
+      with fewer or cheaper commands (a different loop form, fewer DRAM
+      loads, loading an operand once instead of per use, reusing what an
+      earlier loop left in the scratchpad). Write your own instr for it (see
+      "The Gemmini hardware loop"), keeping the loop-nest semantics the
+      reference spec already has.
+    - Fences and ordering: `insert_noop_call(..., fence, [])` serializes the
+      accelerator. Only fences between dependent operations are needed (see
+      the measured constraint above); independent operations can share one.
+    - Tile and launch counts: row tiling such as `NLB_ROW_TILE` decides how
+      many hardware-loop launches are issued per operator.
+    - Reshaping or re-laying out the staged weight buffers at the
+      `braggnn_eval` level (see "What is measured") so a layer needs fewer
+      launches, or so it reads its input in the layout the previous layer
+      wrote it.
+    - Offloading work with `exo.platforms.gemmini` block instructions
+      (`zero_acc_i32`, `ld_i8_id1` / `ld_i8_id2`, `matmul_acc_i8`,
+      `st_acc_i32`, on `GEMM_SCRATCH` / `GEMM_ACCUM` memories whose innermost
+      dimension must be exactly 16; here DIM = 16). Only through
+      equivalence-preserving scheduling: bring the original loops into the
+      instruction's form and swap them in with `replace`. Every read and
+      write of a `GEMM_SCRATCH` buffer has to come from an instr: Exo refuses
+      scalar access to it. The CPU issues every such tile itself, so this
+      pays only where it saves a DRAM round trip.
+    - CPU loops (the input quantization, the NCHW flatten): `unroll_loop`,
+      `reorder_loops`, fusion. The profile shows how small these are; do not
+      spend a whole candidate on unrolling.
+    A candidate whose generated C equals an earlier one teaches nothing, so vary
+    something that changes the generated code.
+
+    ## The Gemmini hardware loop
+
+    `gemmini_loop_ws(I, J, K, pad_I, pad_J, pad_K, A, B, D, C, A_stride,
+    B_stride, D_stride, C_stride, A_transpose, B_transpose, full_C, low_D,
+    ex_accumulate, act, a_spad_id, b_spad_id, is_resadd)` (gemmini.h, excerpt
+    appended) issues five config commands and one `LOOP_WS` command; Gemmini's
+    LoopMatmul unit then runs the whole tiled matmul C = act(A * B + D) over
+    I x J x K tiles of 16 (pad_* = unused rows / columns of the last tile)
+    with its own loaders, execute and store stages. What the fields do:
+    - The loads use the strides and scales of `gemmini_extended*_config_ld`
+      ids 0 (A), 1 (B) and 2 (D); the store uses `gemmini_extended_config_st`
+      (output scale and activation) and the execute unit
+      `gemmini_extended_config_ex`.
+    - A DRAM address of 0 means "do not load this operand": for A or B the
+      loop uses what is already in that operand's scratchpad region (the
+      previous loop's operand; gemmini.h's `tiled_matmul_outer` uses this as
+      `a_reuse`), for D it means no bias. D_stride 0 repeats one bias row for
+      every output row; `ex_accumulate` = 1 adds A*B onto the loaded D.
+    - `is_resadd` = 1 with K = 0: A and B are both loaded into the
+      accumulator with their mvin scales (config_ld with `shrunk` = true) and
+      added, C = act(scale_A * A + scale_B * B). The seed's residual add uses
+      this. Any activation works on the store, including SOFTMAX (configured
+      with `gemmini_config_norm`).
+    - In the final `LOOP_WS` command, rs2 bits 3..7 mark the loop's ldA,
+      ldB, ldD, execute and store stages as already done (the stage is then
+      skipped), and bit 9 (`spad_only`) stores C into scratchpad row
+      rs2[63:32] instead of DRAM (`gemmini_loop_ws_spad`). `gemmini_loop_ws`
+      itself does not expose bits 3..7: issue the six
+      `ROCC_INSTRUCTION_RS1_RS2` commands of its macro yourself, e.g. from a
+      macro in your instr's `c_global`.
+    - Gemmini does not order a loop's DRAM loads after an earlier loop's
+      DRAM stores; a `gemmini_fence()` between dependent loops is required.
+
+    ## Known hardware quirk
+
+    `zero_acc_i32` issued right after `ld_acc_i32` on the same accumulator can
+    be partly lost (the zero overtakes the pending DRAM load, like
+    ucb-bar/gemmini#67), leaving stale values. Avoid that sequence; clear a
+    just-loaded accumulator by loading a zero DRAM buffer with `ld_acc_i32`,
+    or overwrite it with `matmul_i8`.
+
+monitor:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8765

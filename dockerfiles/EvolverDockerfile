@@ -1,0 +1,12 @@
+FROM ghcr.io/ucb-bar/chia-opencode:v1.0.1
+
+# evolve-flows and skydiscover are private forks and can only be
+# fetched over SSH; scripts/deploy.sh forwards the builder's key with --ssh.
+# The same key also fetches evolve-flows' skydiscover submodule (git@github.com:).
+RUN --mount=type=ssh,uid=1000 \
+    mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts && \
+    pip install --no-cache-dir \
+    "importlib-metadata<8.8" \
+    "alpha-evolve @ git+https://github.com/Google-Cloud-AI/alphaevolve-on-googlecloud.git@b51ab7a6446d0168bf6db52c6dccbec414a21b3f" \
+    "evolve-flows @ git+ssh://git@github.com/ANL-TUT/evolve-flows.git@4f913a8453be130c7b00916a4d9129fd142e02ab" \
+    "skydiscover @ git+ssh://git@github.com/ANL-TUT/skydiscover.git@48690d9e0c850fc55f1cf95a6544f178adf3ddf7"

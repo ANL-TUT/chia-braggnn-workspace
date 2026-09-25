@@ -1,0 +1,4 @@
+FROM ghcr.io/ucb-bar/chia-riscv-cross:v1.0.1
+
+RUN pip install --no-cache-dir \
+    "git+https://github.com/exo-lang/exo.git@defe17283d15553ca9d6ad70b2e9f4c22ff36ce2"

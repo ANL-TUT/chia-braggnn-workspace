@@ -1,0 +1,90 @@
+provider:
+    head_ip: ${CHIA_HEAD_IP}
+
+auth:
+    ssh_user: ${CHIA_SSH_USER}
+    ssh_private_key: ${CHIA_HEAD_PRIVATE_KEY}
+    overrides:
+        # Must be the same address as CHIA_FIRESIM_IP: chia expands ${...}
+        # only in values, not in keys.
+        "<FIRESIM_NODE_IP>":
+            ssh_user: ${CHIA_SSH_USER}
+            ssh_private_key: ${CHIA_FIRESIM_PRIVATE_KEY}
+
+available_node_types:
+    firesim:
+        resources: {"FPGA": 1, "manager": 1}
+        num_workers: 1
+        compatible_ips: ["${CHIA_FIRESIM_IP}"]
+        worker_env_commands:
+            - "conda activate firesim_chia_env"
+            # Vivado's parallel IP synthesis pushes this 31 GB node past Ray's
+            # 95% memory threshold, and Ray's OOM killer then kills the
+            # bitstream build task (the build itself fits in memory).
+            - "export RAY_memory_monitor_refresh_ms=0"
+
+    exo_compiler:
+        resources: {"exo_build": 8}
+        num_workers: 1
+        compatible_ips: ["${CHIA_HEAD_IP}"]
+        docker:
+            image: "chia-exo:latest"
+            container_name: "chia-exo"
+            pull_before_run: False
+
+    opencode:
+        resources: {"opencode_creds": 1, "evolver": 1} # This node has both opencode and alphaevolve APIs
+        num_workers: 1
+        compatible_ips: ["${CHIA_HEAD_IP}"]
+        docker:
+            image: "chia-evolver:latest"
+            container_name: "chia-opencode"
+            pull_before_run: False
+            run_options:
+                - "-v ${HOME}/.config/gcloud:/mnt/host-gcloud:ro"
+                - "-e GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}"
+                - "-e GE_APP_ID=${GE_APP_ID}"
+                - "-e VERTEX_LOCATION=global"
+            run_setup_commands:
+                - "mkdir -p ~/.config/gcloud"
+                - "sudo cat /mnt/host-gcloud/application_default_credentials.json > ~/.config/gcloud/application_default_credentials.json"
+    vlsi:
+      resources: {"chipyard": 1}
+      num_workers: 1
+      compatible_ips: ["${CHIA_HEAD_IP}"]
+      worker_setup_commands:
+        - "source ${CHIPYARD_PATH}/env.sh"
+      docker:
+        image: "chia-sky130:latest"
+        container_name: "chia-sky130"
+        pull_before_run: False
+        run_options:
+          - "--user ${HOST_UID}:${HOST_GID}"
+          # --user does not set USER, and Genus's startup scripts read $USER.
+          - "-e USER=${USER}"
+          - "-v ${CHIPYARD_PATH}:${CHIPYARD_PATH}"
+          - "-e CADENCE_HOME=/home/ray/cadence"
+          - "-v ${VLSI_CADENCE_HOME}:/home/ray/cadence"
+          - "-e CDS_LIC_FILE=${CDS_LIC_FILE}"
+          - "-e GENUS_BIN=${GENUS_BIN}"
+          - "-e INNOVUS_BIN=${INNOVUS_BIN}"
+          - "-e CADENCE_SETUP=${CADENCE_SETUP}"
+          - "-e CDS_SKIP_OS_CHECK=1"
+          # Merge the OpenRAM 1rw1r entries into the mounted chipyard's Hammer
+          # sram-cache.json (once; a no-op when already there) so dual-port
+          # memories can be mapped. See VLSI_INPUT_CONFS in chia/constants.py.
+          - "-e WITH_OPENRAM=1"
+          # Keep Ray's OOM killer off Genus synthesis (see the firesim node type).
+          - "-e RAY_memory_monitor_refresh_ms=0"
+
+
+head_env_commands:
+    - "source ${CHIA_WORKSPACE_PATH}/.venv/bin/activate"
+
+head_start_ray_commands:
+    - "ray stop"
+    - "ray start --head --port=6379 --include-dashboard=True --dashboard-host=0.0.0.0 --dashboard-agent-listen-port=0"
+
+worker_start_ray_commands:
+    - "ray stop"
+    - "ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0"

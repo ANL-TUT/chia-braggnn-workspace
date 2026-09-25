@@ -1,0 +1,10 @@
+{
+  "attempt": 6,
+  "cycles": 40000.0,
+  "subpixel_error": 0.219,
+  "ppa_success": true,
+  "total_area_um2": 82887616.937,
+  "worst_slack_ns": -23.467,
+  "total_power_w": 0.680469,
+  "ppa_obj_dir": "/nfs/app/chipyard/vlsi/build-chia-ppa/attempt5-a75f56eb"
+}

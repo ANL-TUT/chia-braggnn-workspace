@@ -1,0 +1,11 @@
+candidate_0001.py: PASSED cycles=44108.0 subpixel_error=0.219 score=1.0241 (new best)
+candidate_0004.py: FAILED at build cycles=None subpixel_error=None score=0.0000
+candidate_0003.py: PASSED cycles=43565.0 subpixel_error=0.219 score=1.0368 (new best)
+candidate_0006.py: PASSED cycles=43565.0 subpixel_error=0.219 score=1.0368
+candidate_0002.py: PASSED cycles=42069.0 subpixel_error=0.219 score=1.0737 (new best)
+candidate_0007.py: FAILED at build cycles=None subpixel_error=None score=0.0000
+candidate_0005.py: PASSED cycles=42069.0 subpixel_error=0.219 score=1.0737
+candidate_0010.py: FAILED at build cycles=None subpixel_error=None score=0.0000
+candidate_0009.py: PASSED cycles=41405.0 subpixel_error=0.219 score=1.0909 (new best)
+candidate_0012.py: FAILED at build cycles=None subpixel_error=None score=0.0000
+candidate_0013.py: FAILED at build cycles=None subpixel_error=None score=0.0000

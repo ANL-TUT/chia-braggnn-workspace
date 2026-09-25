@@ -1,0 +1,123 @@
+# ===== diff: generators/gemmini =====
+diff --git a/software/gemmini-rocc-tests b/software/gemmini-rocc-tests
+--- a/software/gemmini-rocc-tests
++++ b/software/gemmini-rocc-tests
+@@ -1 +1 @@
+-Subproject commit 7c540b3adf1b86ad93d07f893abe3a73489b568e
++Subproject commit 7c540b3adf1b86ad93d07f893abe3a73489b568e-dirty
+diff --git a/src/main/scala/gemmini/AccumulatorScale.scala b/src/main/scala/gemmini/AccumulatorScale.scala
+index fdaf096..75b7636 100644
+--- a/src/main/scala/gemmini/AccumulatorScale.scala
++++ b/src/main/scala/gemmini/AccumulatorScale.scala
+@@ -390,7 +390,6 @@ object AccumulatorScale {
+   }
+ 
+   def iexp[T <: Data](q: T, qln2: T, qln2_inv: T, qb: T, qc: T)(implicit ev: Arithmetic[T]): T = {
+-    /*
+     import ev._
+ 
+     val zero = q.zero
+@@ -407,18 +406,6 @@ object AccumulatorScale {
+     val q_poly_iexp = qc.mac(qp_iexp + qb, qp_iexp + qb).withWidthOf(q)
+     // we dont want a rounding shift
+     //  TODO: z overflow
+-    (q_poly_iexp.asUInt.do_>>(z_iexp_saturated.asUInt)).asTypeOf(q) */
+-    import ev._
+-
+-    val zero = q.zero
+-    val one = q.identity
+-    def neg(x: T) = zero-x
+-
+-    val q_sign = Mux(q.zero > q, neg(one), one)
+-    val q_abs = Mux(q.zero > q, neg(q), q)
+-    val q_clipped = Mux(q_abs > neg(qb), neg(qb), q_abs)
+-    val q_poly = qc.mac(q_clipped + qb, q_clipped + qb).withWidthOf(q)
+-    val q_erf = (q_sign * q_poly).withWidthOf(q)
+-    (q * (q_erf + qc)).withWidthOf(q)
++    (q_poly_iexp.asUInt.do_>>(z_iexp_saturated.asUInt)).asTypeOf(q)
+   }}
+ 
+diff --git a/src/main/scala/gemmini/Configs.scala b/src/main/scala/gemmini/Configs.scala
+index 15b66db..d93b215 100644
+--- a/src/main/scala/gemmini/Configs.scala
++++ b/src/main/scala/gemmini/Configs.scala
+@@ -35,41 +35,45 @@ object GemminiConfigs {
+     meshColumns = 16,
+ 
+     // Spatial array PE options
+-    dataflow = Dataflow.BOTH,
++    dataflow = Dataflow.WS,
+ 
+     // Scratchpad and accumulator
+     sp_capacity = CapacityInKilobytes(256),
+     acc_capacity = CapacityInKilobytes(64),
+ 
+-    sp_banks = 4,
++    sp_banks = 8,
+     acc_banks = 2,
+ 
+     sp_singleported = true,
+     acc_singleported = false,
+ 
++    spad_read_delay = 1,
++
+     // DNN options
+-    has_training_convs = true,
+-    has_max_pool = true,
++    has_training_convs = false,
++    has_max_pool = false,
++    has_dw_convs = false,
+     has_nonlinear_activations = true,
++    has_normalizations = true,
+ 
+     // Reservation station entries
+-    reservation_station_entries_ld = 8,
+-    reservation_station_entries_st = 4,
+-    reservation_station_entries_ex = 16,
++    reservation_station_entries_ld = 32,
++    reservation_station_entries_st = 16,
++    reservation_station_entries_ex = 32,
+ 
+     // Ld/Ex/St instruction queue lengths
+-    ld_queue_length = 8,
+-    st_queue_length = 2,
+-    ex_queue_length = 8,
++    ld_queue_length = 16,
++    st_queue_length = 8,
++    ex_queue_length = 16,
+ 
+     // DMA options
+-    max_in_flight_mem_reqs = 16,
++    max_in_flight_mem_reqs = 64,
+ 
+     dma_maxbytes = 64,
+     dma_buswidth = 128,
+ 
+     // TLB options
+-    tlb_size = 4,
++    tlb_size = 8,
+ 
+     // Mvin and Accumulator scalar multiply options
+     mvin_scale_args = Some(ScaleArguments(
+@@ -106,7 +110,7 @@ object GemminiConfigs {
+ 
+         Mux(overflow, sat, rec_fn_to_in.io.out.asTypeOf(t))
+       },
+-      4, Float(8, 24), 4,
++      4, Float(8, 24), -1,
+       identity = "1.0",
+       c_str = "({float y = ROUND_NEAR_EVEN((x) * (scale)); y > INT8_MAX ? INT8_MAX : (y < INT8_MIN ? INT8_MIN : (elem_t)y);})"
+     )),
+diff --git a/src/main/scala/gemmini/GemminiConfigs.scala b/src/main/scala/gemmini/GemminiConfigs.scala
+index e5a73de..6e60595 100644
+--- a/src/main/scala/gemmini/GemminiConfigs.scala
++++ b/src/main/scala/gemmini/GemminiConfigs.scala
+@@ -89,7 +89,7 @@ case class GemminiArrayConfig[T <: Data : Arithmetic, U <: Data, V <: Data](
+                                                                              has_max_pool: Boolean = true,
+                                                                              has_nonlinear_activations: Boolean = true,
+                                                                              has_dw_convs: Boolean = true,
+-                                                                             has_normalizations: Boolean = false,
++                                                                             has_normalizations: Boolean = true,
+                                                                              has_first_layer_optimizations: Boolean = true,
+                                                                              has_loop_conv: Boolean = true,
+ 

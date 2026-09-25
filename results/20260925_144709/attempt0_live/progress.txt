@@ -1,0 +1,51 @@
+candidate_0001.py: PASSED cycles=44687.0 subpixel_error=0.219 score=1.0108 (new best)
+candidate_0002.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457 (new best)
+candidate_0005.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0006.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0004.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0007.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0008.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0004.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0009.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0010.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0011.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0013.py: FAILED at build cycles=None subpixel_error=None score=0.0000
+candidate_0014.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0012.py: PASSED cycles=40125.0 subpixel_error=0.219 score=1.1257 (new best)
+candidate_0016.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0015.py: FAILED at exactness_gate cycles=42040.0 subpixel_error=0.495 score=0.0000
+candidate_0019.py: PASSED cycles=40125.0 subpixel_error=0.219 score=1.1257
+candidate_0017.py: PASSED cycles=44237.0 subpixel_error=0.219 score=1.0211
+candidate_0020.py: PASSED cycles=40125.0 subpixel_error=0.219 score=1.1257
+candidate_0018.py: FAILED at exactness_gate cycles=40145.0 subpixel_error=0.24 score=0.0000
+candidate_0021.py: FAILED at build cycles=None subpixel_error=None score=0.0000
+candidate_0022.py: PASSED cycles=40125.0 subpixel_error=0.219 score=1.1257
+candidate_0023.py: FAILED at build cycles=None subpixel_error=None score=0.0000
+candidate_0025.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0025.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0027.py: FAILED at build cycles=None subpixel_error=None score=0.0000
+candidate_0026.py: PASSED cycles=40125.0 subpixel_error=0.219 score=1.1257
+candidate_0029.py: FAILED at build cycles=None subpixel_error=None score=0.0000
+candidate_0028.py: PASSED cycles=42108.0 subpixel_error=0.219 score=1.0727
+candidate_0031.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0033.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0030.py: PASSED cycles=39351.0 subpixel_error=0.219 score=1.1479 (new best)
+candidate_0032.py: PASSED cycles=39039.0 subpixel_error=0.219 score=1.1570 (new best)
+candidate_0035.py: PASSED cycles=39039.0 subpixel_error=0.219 score=1.1570
+candidate_0034.py: PASSED cycles=38261.0 subpixel_error=0.219 score=1.1806 (new best)
+candidate_0038.py: PASSED cycles=40125.0 subpixel_error=0.219 score=1.1257
+candidate_0036.py: PASSED cycles=38984.0 subpixel_error=0.219 score=1.1587
+candidate_0039.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0040.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0041.py: FAILED at build cycles=None subpixel_error=None score=0.0000
+candidate_0037.py: PASSED cycles=38203.0 subpixel_error=0.219 score=1.1824 (new best)
+candidate_0042.py: PASSED cycles=43194.0 subpixel_error=0.219 score=1.0457
+candidate_0044.py: PASSED cycles=38261.0 subpixel_error=0.219 score=1.1806
+candidate_0045.py: PASSED cycles=38203.0 subpixel_error=0.219 score=1.1824
+candidate_0043.py: PASSED cycles=37569.0 subpixel_error=0.219 score=1.2023 (new best)
+candidate_0048.py: PASSED cycles=37569.0 subpixel_error=0.219 score=1.2023
+candidate_0046.py: PASSED cycles=37684.0 subpixel_error=0.219 score=1.1987
+candidate_0049.py: PASSED cycles=37569.0 subpixel_error=0.219 score=1.2023
+candidate_0050.py: PASSED cycles=37684.0 subpixel_error=0.219 score=1.1987
+candidate_0047.py: PASSED cycles=37684.0 subpixel_error=0.219 score=1.1987
+candidate_0052.py: PASSED cycles=37684.0 subpixel_error=0.219 score=1.1987
