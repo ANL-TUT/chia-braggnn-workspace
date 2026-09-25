@@ -1,8 +1,8 @@
 [
   {
-    "elf": "/var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-base/braggnn.riscv",
+    "elf": "/var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-a-base/braggnn.riscv",
     "returncode": 0,
-    "avg_cycles": 44803,
+    "avg_cycles": 39953,
     "avg_error": [
       0.219,
       0.151
@@ -53,9 +53,9 @@
     "uart_tail": ""
   },
   {
-    "elf": "/var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-base-marks/braggnn.riscv",
+    "elf": "/var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-a-base-marks/braggnn.riscv",
     "returncode": 0,
-    "avg_cycles": 42436,
+    "avg_cycles": 42109,
     "avg_error": [
       0.219,
       0.151
@@ -105,55 +105,55 @@
     "marks": [
       [
         "conv1",
-        4465
+        4537
       ],
       [
         "nlb_qkv",
-        6170
+        5318
       ],
       [
         "theta_phi",
-        2893
+        2792
       ],
       [
         "softmax",
-        8979
+        8982
       ],
       [
         "attention_g",
-        2326
+        2384
       ],
       [
         "nlb_out_conv",
-        2433
+        2258
       ],
       [
         "resadd",
-        2996
+        4713
       ],
       [
         "conv2",
-        7542
+        6568
       ],
       [
         "conv3",
-        1615
+        1568
       ],
       [
         "fc1",
-        2112
+        2100
       ],
       [
         "fc2..output",
-        847
+        846
       ]
     ],
     "uart_tail": ""
   },
   {
-    "elf": "/var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-flatten/braggnn.riscv",
+    "elf": "/var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-a-flatten/braggnn.riscv",
     "returncode": 0,
-    "avg_cycles": 40543,
+    "avg_cycles": 40360,
     "avg_error": [
       0.219,
       0.151
@@ -204,9 +204,9 @@
     "uart_tail": ""
   },
   {
-    "elf": "/var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-softmax/braggnn.riscv",
+    "elf": "/var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-a-softmax/braggnn.riscv",
     "returncode": 0,
-    "avg_cycles": 42937,
+    "avg_cycles": 37739,
     "avg_error": [
       0.219,
       0.151
@@ -257,9 +257,9 @@
     "uart_tail": ""
   },
   {
-    "elf": "/var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-tail/braggnn.riscv",
+    "elf": "/var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-a-qkv/braggnn.riscv",
     "returncode": 0,
-    "avg_cycles": 47305,
+    "avg_cycles": 41299,
     "avg_error": [
       0.219,
       0.151
@@ -310,62 +310,9 @@
     "uart_tail": ""
   },
   {
-    "elf": "/var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-qkv/braggnn.riscv",
+    "elf": "/var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-a-qkv-reuse/braggnn.riscv",
     "returncode": 0,
-    "avg_cycles": 44581,
-    "avg_error": [
-      0.219,
-      0.151
-    ],
-    "patch_errors": {
-      "0": [
-        "-0.344",
-        "0.636"
-      ],
-      "1": [
-        "0.191",
-        "-0.001"
-      ],
-      "2": [
-        "0.466",
-        "-0.011"
-      ],
-      "3": [
-        "0.022",
-        "0.354"
-      ],
-      "4": [
-        "0.276",
-        "-0.219"
-      ],
-      "5": [
-        "-0.777",
-        "0.034"
-      ],
-      "6": [
-        "-0.026",
-        "0.014"
-      ],
-      "7": [
-        "0.001",
-        "0.022"
-      ],
-      "8": [
-        "0.044",
-        "0.162"
-      ],
-      "9": [
-        "-0.039",
-        "0.061"
-      ]
-    },
-    "marks": [],
-    "uart_tail": ""
-  },
-  {
-    "elf": "/var/home/hoku/repo/chia-braggnn-workspace/build/braggnn_tune_opus-qkv-reuse/braggnn.riscv",
-    "returncode": 0,
-    "avg_cycles": 43491,
+    "avg_cycles": 40820,
     "avg_error": [
       0.219,
       0.151
