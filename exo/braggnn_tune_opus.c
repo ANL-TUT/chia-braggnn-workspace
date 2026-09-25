@@ -70,8 +70,9 @@
 // the seed's): OPT_FC1_NO_FLATTEN + OPT_SOFTMAX_LOAD + OPT_SOFTMAX_ONE_LOAD +
 // OPT_QKV_LOOP_WS + OPT_QKV_REUSE_A + OPT_NLBOUT_LOOP_WS, 34,028 cycles/patch against 39,953 for
 // OPT_BASELINE (the Exo build's calls). Added since, measured on Verilator with the
-// rtl_patches/ RTL: OPT_ATT_STRIDE=128 and the eight-wide input quantization
-// (OPT_QUANT_SERIAL restores the one-at-a-time loop), 27,039 cycles/patch.
+// rtl_patches/ RTL: OPT_ATT_STRIDE=128, the eight-wide input quantization
+// (OPT_QUANT_SERIAL restores the one-at-a-time loop), 27,039 cycles/patch, and
+// OPT_WEIGHTS_RESIDENT, 26,489 cycles/patch.
 // OPT_CONV1_IM2COL (+2.2k in conv1) and OPT_TAIL_ON_CPU (slower than four tiny
 // Gemmini loops; a version with all outputs accumulating at once and fcvt
 // rounding was slower still: 2,127 vs 848 cycles) measured worse,
@@ -98,6 +99,7 @@
 #ifndef OPT_ATT_STRIDE
 #define OPT_ATT_STRIDE 128
 #endif
+#define OPT_WEIGHTS_RESIDENT
 #endif
 
 #ifndef OPT_ATT_STRIDE
