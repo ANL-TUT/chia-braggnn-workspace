@@ -16,6 +16,25 @@
 #define EVAL_PATCHES NUM_TEST_PATCHES
 #endif
 
+#ifdef CHIA_LAYER_MARKS
+// Per-layer profiling (src/layer_profile.py): the profiled schedule calls
+// chia_mark(i, name) after every layer; mark i accumulates the cycles since
+// the previous mark, summed over all patches. Unset, none of this is compiled.
+#define CHIA_MAX_MARKS 64
+static uint64_t chia_mark_cycles[CHIA_MAX_MARKS];
+static const char *chia_mark_names[CHIA_MAX_MARKS];
+static uint64_t chia_mark_prev;
+void chia_mark(int i, const char *name) {
+  uint64_t c;
+  asm volatile("rdcycle %0" : "=r"(c));
+  if (i > 0 && i < CHIA_MAX_MARKS) {
+    chia_mark_cycles[i] += c - chia_mark_prev;
+    chia_mark_names[i] = name;
+  }
+  chia_mark_prev = c;
+}
+#endif
+
 static float patches[NUM_TEST_PATCHES][INPUT_DIM][INPUT_DIM];
 static int8_t preds[NUM_TEST_PATCHES][OUTPUT_UNITS][1][1];
 static int32_t patch_cycles[NUM_TEST_PATCHES];
@@ -88,6 +107,12 @@ int main(void) {
 
   xprintf("Avg cycles: %lu\n",
           (unsigned long)(total_cycles / EVAL_PATCHES));
+#ifdef CHIA_LAYER_MARKS
+  for (int i = 1; i < CHIA_MAX_MARKS; i++)
+    if (chia_mark_cycles[i])
+      xprintf("mark %d %s: %lu\n", i, chia_mark_names[i],
+              (unsigned long)(chia_mark_cycles[i] / EVAL_PATCHES));
+#endif
   xprintf("Avg error: (%.3f, %.3f) px (tolerance %.3f px)%s\n", avg_x_error,
           avg_y_error, (float)MAX_AVG_ERROR_PX, failed ? " FAIL" : "");
 
