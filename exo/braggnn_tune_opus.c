@@ -62,6 +62,12 @@
 //                       before the patch loop, and stay there: each patch skips
 //                       those weight loads. The conv layers (loop_conv) still load
 //                       theirs. Outside the per-patch timing like the staging copies.
+//   OPT_CONV1_WINDOW    conv1 as a loop_ws matmul over sliding 32-byte windows of the
+//                       flattened input (one stride-1 mvin per output row, no CPU
+//                       im2col) with the taps spread over a zero-padded 32 x 64 W'.
+//   OPT_CONV3_RESIDENT  with OPT_CONV1_WINDOW (conv1 no longer a conv loop), conv3's
+//                       weights stay in the conv loop's id-1 region (ending at row
+//                       8192); theta*phi^T and attention*g load their B elsewhere.
 //   OPT_CONV2_RESIDENT  conv2's weights (18 KB) likewise stay in the scratchpad, at
 //                       the top (b_spad_id = 2 fixes the conv loop's weight region).
 //   OPT_QUANT_OUTSIDE   the fp32 -> int8 input quantization of every patch runs
@@ -80,7 +86,8 @@
 // OPT_WEIGHTS_RESIDENT, 26,489 cycles/patch, and OPT_QUANT_OUTSIDE, 25,595
 // cycles/patch (from here on the timing excludes the input quantization, which
 // the seed's and OPT_BASELINE's numbers include: ~1,750 cycles one at a time).
-// OPT_CONV2_RESIDENT: 24,483 cycles/patch.
+// OPT_CONV2_RESIDENT: 24,483 cycles/patch; OPT_CONV1_WINDOW: 24,056;
+// OPT_CONV3_RESIDENT: 23,834.
 // OPT_CONV1_IM2COL (+2.2k in conv1) and OPT_TAIL_ON_CPU (slower than four tiny
 // Gemmini loops; a version with all outputs accumulating at once and fcvt
 // rounding was slower still: 2,127 vs 848 cycles) measured worse,
@@ -109,6 +116,8 @@
 #endif
 #define OPT_WEIGHTS_RESIDENT
 #define OPT_CONV2_RESIDENT
+#define OPT_CONV1_WINDOW
+#define OPT_CONV3_RESIDENT
 #define OPT_QUANT_OUTSIDE
 #else
 #define OPT_QUANT_SERIAL  // the Exo build's one-at-a-time loop, inside the timing
@@ -155,6 +164,14 @@ static inline int32_t rdcycle32(void) {
 #define LOOP_REGION1_A_START 0
 #define LOOP_REGION1_B_END (2 * SPAD_BANK_ROWS)  // max_addr / concurrent_loops
 
+#if defined(OPT_CONV3_RESIDENT) && \
+    (!defined(OPT_CONV1_WINDOW) || !defined(OPT_WEIGHTS_RESIDENT) || defined(OPT_NLB_SPAD_CHAIN))
+#error "OPT_CONV3_RESIDENT needs OPT_CONV1_WINDOW and OPT_WEIGHTS_RESIDENT (and the DRAM NLB path)"
+#endif
+#if defined(OPT_CONV1_WINDOW) && defined(OPT_CONV1_IM2COL)
+#error "OPT_CONV1_WINDOW and OPT_CONV1_IM2COL are two ways of the same thing"
+#endif
+
 #ifdef OPT_WEIGHTS_RESIDENT
 #if !defined(OPT_QKV_LOOP_WS) || !defined(OPT_NLBOUT_LOOP_WS) || defined(OPT_QKV_SPAD_CHAIN) || \
     defined(OPT_TAIL_ON_CPU)
@@ -175,9 +192,25 @@ static inline int32_t rdcycle32(void) {
 #define WRES_FC3 (WRES_FC2 + 16)
 #define WRES_FC4 (WRES_FC3 + 16)
 #define WRES_OUT (WRES_FC4 + 16)
+#define WRES_CONV1 (WRES_OUT + 128)            // OPT_CONV1_WINDOW: K 2 x J 4
+// OPT_CONV3_RESIDENT: conv3 keeps its weights in the conv loop's id-1 region
+// (ending at row 8192), so the loop_ws layers that load a B every patch
+// (theta*phi^T: phi, attention*g: g) move theirs here, out of that region.
+#define WRES_TP_B (WRES_CONV1 + 192)           // K 2 x J 6
+#define WRES_AG_B (WRES_TP_B + 192)            // K 6 x J 2
 #define RES_B(w, end) NULL, (end)
 #else
 #define RES_B(w, end) (w), 0u
+#endif
+
+#ifdef OPT_CONV3_RESIDENT
+#define TP_B_END WRES_TP_B
+#define AG_B_END WRES_AG_B
+#define CONV3_W(w) NULL
+#else
+#define TP_B_END 0u
+#define AG_B_END 0u
+#define CONV3_W(w) (w)
 #endif
 
 // b_end != 0: B lives in the scratchpad region ending at row b_end (see
@@ -266,6 +299,39 @@ static void conv3(const int8_t *inp, const int8_t *w, const int32_t *bias,
                        RELU, 0, 0, 0, 0, 1, 32, 8, 8, 0, 1, 1);
   gemmini_fence();
 }
+
+#ifdef OPT_CONV1_WINDOW
+// conv1 as a matmul over sliding windows of the flattened 11 x 11 input: row p
+// = (y, x) of A is the 32 bytes from y*11 + x on, and W' (32 x 64) holds the
+// 3 x 3 taps in rows ky*11 + kx and zeros elsewhere, so A * W' is conv1 exactly
+// (the input slot is zero past its 121 bytes). The nine rows of one output row
+// y are 1 byte apart, so they are one mvin with DRAM stride 1 (split where it
+// crosses a 16-row tile), written straight into the loop's A tiles (region 1,
+// tile (i, k) at (i*2 + k)*16; the second block of a 32-byte row lands 16 rows
+// on). The loop skips its own A load (A = NULL); the reservation station orders
+// its computes after these mvins.
+static void conv1_window(const int8_t *inp, const int8_t *w32, uint32_t b_end,
+                         const int32_t *bias, int8_t *out, float scale) {
+  gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
+  gemmini_extended_config_st(64, NO_ACTIVATION, scale);
+  gemmini_extended4_config_ld(1, 1.0f, false, DIM, 0);
+  for (int y = 0; y < 9; y++) {
+    int p = y * 9, n = 9;
+    const int8_t *src = inp + y * 11;
+    while (n > 0) {
+      const int r = p % DIM, rows = DIM - r < n ? DIM - r : n;
+      gemmini_extended_mvin(src, (p / DIM) * 2 * DIM + r, 32, rows);
+      p += rows; src += rows; n -= rows;
+    }
+  }
+  gemmini_extended3_config_ld(64, 1.0f, false, 1);
+  gemmini_extended3_config_ld(0, 1.0f, false, 2);
+  const int b_id = ws_b_region(b_end);
+  gemmini_loop_ws(6, 4, 2, 15, 0, 0, NULL, w32, bias, out, 32, 64, 0, 64,
+                  0, 0, 0, 0, 1, NO_ACTIVATION, 1, b_id, 0);
+  gemmini_fence();
+}
+#endif
 
 #ifdef OPT_CONV1_IM2COL
 // C[81 x 64] = im2col[81 x 16] * W[16 x 64] + bias; rows 9..15 of W are zero.
@@ -385,8 +451,9 @@ static void matmul_theta_phi(const int8_t *A, const int8_t *B, int8_t *C, float 
   gemmini_extended3_config_ld(32, 1.0f, false, 0);
   gemmini_extended3_config_ld(32, 1.0f, false, 1);
   gemmini_extended3_config_ld(81, 1.0f, false, 2);
+  const int b_id = ws_b_region(TP_B_END);
   gemmini_loop_ws(6, 6, 2, 15, 15, 0, A, B, 0, C, 32, 32, 81, ATT_S, 0, 1, 0, 0, 0,
-                  NO_ACTIVATION, 1, 1, 0);
+                  NO_ACTIVATION, 1, b_id, 0);
   gemmini_fence();
 }
 
@@ -539,8 +606,9 @@ static void matmul_attention_g(const int8_t *A, const int8_t *B, int8_t *C, floa
   gemmini_extended3_config_ld(ATT_S, 1.0f, false, 0);
   gemmini_extended3_config_ld(32, 1.0f, false, 1);
   gemmini_extended3_config_ld(32, 1.0f, false, 2);
+  const int b_id = ws_b_region(AG_B_END);
   gemmini_loop_ws(6, 2, 6, 15, 0, 15, A, B, 0, C, ATT_S, 32, 32, 32, 0, 0, 0, 0, 0, NO_ACTIVATION,
-                  1, 1, 0);
+                  1, b_id, 0);
   gemmini_fence();
 }
 
@@ -652,6 +720,12 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
   memcpy(w_conv1_16, conv1_weights, 9 * 64);
   static int8_t cols[81 * 16] ALIGNED;  // columns 9..15 stay zero
 #endif
+#ifdef OPT_CONV1_WINDOW
+  // W' for conv1_window: tap (ky, kx) of [krow][kcol][1][64] in row ky*11 + kx.
+  static int8_t w_conv1_32[32 * 64] ALIGNED;
+  for (int t = 0; t < 9; t++)
+    memcpy(w_conv1_32 + ((t / 3) * 11 + t % 3) * 64, conv1_weights + t * 64, 64);
+#endif
 #ifdef OPT_FC1_NO_FLATTEN
   // flattened[ch*25 + pix] = conv3_out[pix*8 + ch], so permute each output's
   // 200 weights from (ch, pix) to (pix, ch) order.
@@ -703,7 +777,7 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
   const float s_fc3 = fc3_scale[0] * fc3_post_scale[0];
   const float s_fc4 = fc4_scale[0] * fc4_post_scale[0];
 
-  static int8_t inp_buf[11 * 11] ALIGNED;
+  static int8_t inp_buf[QUANT_SLOT] ALIGNED;  // zero past the 121 bytes (OPT_CONV1_WINDOW reads to 127)
   static int8_t conv1_out[81 * 64] ALIGNED;
 #ifndef OPT_QKV_SPAD_CHAIN  // with it, theta / phi / g live only in the scratchpad
   static int8_t theta[81 * 32] ALIGNED, phi[81 * 32] ALIGNED, g[81 * 32] ALIGNED;
@@ -732,6 +806,12 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
     fc_gemmini(wres_a, 8, w_fc3, WRES_FC3, b_fc3, wres_c, 4, RELU, 1.0f);
     fc_gemmini(wres_a, 4, w_fc4, WRES_FC4, b_fc4, wres_c, 2, RELU, 1.0f);
     fc_gemmini(wres_a, 2, w_out, WRES_OUT, b_out, wres_c, 2, NO_ACTIVATION, 1.0f);
+#ifdef OPT_CONV1_WINDOW
+    conv1_window(wres_a, w_conv1_32, WRES_CONV1, b_conv1, wres_c, 1.0f);
+#endif
+#ifdef OPT_CONV3_RESIDENT
+    conv3(wres_a, w_conv3, b_conv3, wres_c, 1.0f);  // weights into the id-1 conv region
+#endif
   }
 #endif
 
@@ -773,6 +853,8 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
         row[6] = src[22]; row[7] = src[23]; row[8] = src[24];
       }
     conv1_matmul(cols, w_conv1_16, b_conv1, conv1_out, conv1_scale[0]);
+#elif defined(OPT_CONV1_WINDOW)
+    conv1_window(inp, RES_B(w_conv1_32, WRES_CONV1), b_conv1, conv1_out, conv1_scale[0]);
 #else
     conv1(inp, w_conv1, b_conv1, conv1_out, conv1_scale[0]);
 #endif
@@ -849,7 +931,7 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
 
     conv2(nlb_out, CONV2_W(w_conv2), b_conv2, conv2_out, s_conv2);
     MARK(8, "conv2");
-    conv3(conv2_out, w_conv3, b_conv3, conv3_out, s_conv3);
+    conv3(conv2_out, CONV3_W(w_conv3), b_conv3, conv3_out, s_conv3);
     MARK(9, "conv3");
 
 #ifdef OPT_FC1_NO_FLATTEN
