@@ -67,7 +67,10 @@ class RunResult:
 
 
 def bash(script: str, timeout: int) -> subprocess.CompletedProcess:
-    prefix = f"cd {FIRESIM_DIR} && source sourceme-manager.sh && "
+    # --skip-ssh-setup, as FireSim's own runtime_config.py does: without it,
+    # deploy/ssh-setup.sh starts a fresh ssh-agent whenever it cannot reach one.
+    # The node's worker_env_commands already load ~/.ssh/AGENT_VARS.
+    prefix = f"cd {FIRESIM_DIR} && source sourceme-manager.sh --skip-ssh-setup && "
     return subprocess.run(
         ["bash", "-l", "-c", prefix + script],
         capture_output=True,

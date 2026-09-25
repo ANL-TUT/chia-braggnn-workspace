@@ -32,6 +32,15 @@
 //                       marked done): one DRAM store + reload less. Tile (i,j) of
 //                       the store lands at dst + (i*6+j)*16, exactly where the
 //                       execute unit reads A tile (i,k) of a K = 6 loop.
+//   OPT_QKV_SPAD_CHAIN  with OPT_QKV_LOOP_WS: the three qkv matmuls store theta, phi
+//                       and g into the scratchpad (spad_only store; no activation,
+//                       so no normalizer involved), and theta*phi^T reads both its
+//                       operands there, attention*g its B (g): the loads of those
+//                       loops are marked done. Scratchpad banks (4 x 4096 rows):
+//                       loop-loaded A in bank 0, B in bank 1 (the default regions),
+//                       theta and g in bank 2, phi in bank 3, so every loop reads
+//                       A and B from different banks and the qkv stores do not hit
+//                       the banks that the qkv loop itself reads.
 //   OPT_CONV1_IM2COL    conv1 (one input channel) as a matmul: the CPU writes the
 //                       quantized input straight into an 81x16 im2col matrix
 //                       (9 taps, zero-padded), Gemmini multiplies it by the
@@ -90,6 +99,20 @@ static inline int32_t rdcycle32(void) {
 #define LOOP_SKIP_LDA (1 << 3)
 #define LOOP_SKIP_LDB (1 << 4)
 #define LOOP_SPAD_ONLY (1 << 9)
+// OPT_QKV_SPAD_CHAIN placement (12 tiles = 192 rows each; bank = row / 4096).
+#define SPAD_BANK_ROWS 4096
+#define THETA_SPAD_ROW (2 * SPAD_BANK_ROWS)
+#define G_SPAD_ROW (2 * SPAD_BANK_ROWS + 256)
+#define PHI_SPAD_ROW (3 * SPAD_BANK_ROWS)
+#define LOOP_REGION1_A_START 0
+#define LOOP_REGION1_B_END (2 * SPAD_BANK_ROWS)  // max_addr / concurrent_loops
+
+#define LOOP_BOUNDS(I, J, K, pad_I, pad_J, pad_K)                                             \
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC,                                                        \
+                           ((uint64_t)(pad_K) << 32) | ((uint64_t)(pad_J) << 16) | (pad_I),     \
+                           ((uint64_t)(K) << 32) | ((uint64_t)(J) << 16) | (I),                  \
+                           k_LOOP_WS_CONFIG_BOUNDS)
+
 // Scratchpad rows for the softmax output in OPT_NLB_SPAD_CHAIN: 36 tiles of 16
 // rows, clear of the loop A region (from row 0) and B region (ending at
 // max_addr / concurrent_loops) that the neighbouring loops use.
@@ -179,6 +202,31 @@ static void qkv_matmul(const int8_t *inp, const int8_t *w, const int32_t *bias, 
 }
 #endif
 
+#ifdef OPT_QKV_SPAD_CHAIN
+// qkv_matmul, but C goes to scratchpad row dst_row (spad_only store). With
+// spad_only the execute unit takes A / B from the SPAD_AB addresses, so set
+// them to where the id-1 loaders put A and B (region 1). inp == NULL reuses A.
+static void qkv_matmul_to_spad(const int8_t *inp, const int8_t *w, const int32_t *bias,
+                               uint32_t dst_row, float scale) {
+  gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
+  gemmini_extended_config_st(32, NO_ACTIVATION, scale);
+  gemmini_extended3_config_ld(64, 1.0f, false, 0);
+  gemmini_extended3_config_ld(32, 1.0f, false, 1);
+  gemmini_extended3_config_ld(0, 1.0f, false, 2);
+  LOOP_BOUNDS(6, 2, 4, 15, 0, 0);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, inp, w, k_LOOP_WS_CONFIG_ADDRS_AB);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, bias, 0, k_LOOP_WS_CONFIG_ADDRS_DC);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 64, 32, k_LOOP_WS_CONFIG_STRIDES_AB);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, 0, k_LOOP_WS_CONFIG_STRIDES_DC);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, LOOP_REGION1_A_START, LOOP_REGION1_B_END,
+                           k_LOOP_WS_CONFIG_SPAD_AB);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC,
+                           ((uint64_t)1 << 18) | ((uint64_t)1 << 16) |
+                               ((uint64_t)NO_ACTIVATION << 8) | 1 /* ex_accumulate: bias */,
+                           ((uint64_t)dst_row << 32) | LOOP_SPAD_ONLY, k_LOOP_WS);
+}
+#endif
+
 // ------------------------------------------------------------------ NLB ops
 
 // C[81 x 81] = theta[81 x 32] * phi[81 x 32]^T
@@ -192,6 +240,29 @@ static void matmul_theta_phi(const int8_t *A, const int8_t *B, int8_t *C, float 
                   NO_ACTIVATION, 1, 1, 0);
   gemmini_fence();
 }
+
+#ifdef OPT_QKV_SPAD_CHAIN
+// theta * phi^T with theta and phi already in the scratchpad (banks 2 and 3).
+static void matmul_theta_phi_spad(int8_t *C, float scale) {
+  gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 1);
+  gemmini_extended_config_st(81, NO_ACTIVATION, scale);
+  gemmini_extended3_config_ld(32, 1.0f, false, 0);
+  gemmini_extended3_config_ld(32, 1.0f, false, 1);
+  gemmini_extended3_config_ld(81, 1.0f, false, 2);
+  LOOP_BOUNDS(6, 6, 2, 15, 15, 0);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, 0, k_LOOP_WS_CONFIG_ADDRS_AB);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, C, k_LOOP_WS_CONFIG_ADDRS_DC);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 32, 32, k_LOOP_WS_CONFIG_STRIDES_AB);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 81, 81, k_LOOP_WS_CONFIG_STRIDES_DC);
+  // B tiles (j,k) sit at b_addr_end - 6*2*16 + (j*2 + k)*16.
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, THETA_SPAD_ROW, PHI_SPAD_ROW + 6 * 2 * DIM,
+                           k_LOOP_WS_CONFIG_SPAD_AB);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, (uint64_t)NO_ACTIVATION << 8,
+                           LOOP_SKIP_LDA | LOOP_SKIP_LDB | (1 << 1) /* B_transpose */,
+                           k_LOOP_WS);
+  gemmini_fence();
+}
+#endif
 
 static void softmax_81(const int8_t *A, int8_t *C, float in_scale, float out_scale) {
   gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
@@ -282,6 +353,28 @@ static void matmul_attention_g_spad(const int8_t *B, int8_t *C, float scale) {
   // a_ex_spad_id = 0 (read A from a_addr_start), b_spad_id = 1, no activation.
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)1 << 16) | ((uint64_t)NO_ACTIVATION << 8),
                            LOOP_SKIP_LDA, k_LOOP_WS);
+  gemmini_fence();
+}
+#endif
+
+#ifdef OPT_QKV_SPAD_CHAIN
+// attention * g with g already in the scratchpad (bank 2); A loads into
+// region 1 (bank 0) as usual.
+static void matmul_attention_g_gspad(const int8_t *A, int8_t *C, float scale) {
+  gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
+  gemmini_extended_config_st(32, NO_ACTIVATION, scale);
+  gemmini_extended3_config_ld(81, 1.0f, false, 0);
+  gemmini_extended3_config_ld(32, 1.0f, false, 1);
+  gemmini_extended3_config_ld(32, 1.0f, false, 2);
+  LOOP_BOUNDS(6, 2, 6, 15, 0, 15);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, A, 0, k_LOOP_WS_CONFIG_ADDRS_AB);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, C, k_LOOP_WS_CONFIG_ADDRS_DC);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 81, 32, k_LOOP_WS_CONFIG_STRIDES_AB);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 32, 32, k_LOOP_WS_CONFIG_STRIDES_DC);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, G_SPAD_ROW + 6 * 2 * DIM, k_LOOP_WS_CONFIG_SPAD_AB);
+  // a_spad_id = 1 (region 1, where ldA puts A), b_ex_spad_id = 0 (b_addr_end).
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)1 << 18) | ((uint64_t)NO_ACTIVATION << 8),
+                           LOOP_SKIP_LDB, k_LOOP_WS);
   gemmini_fence();
 }
 #endif
@@ -395,7 +488,9 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
 
   static int8_t inp[11 * 11] ALIGNED;
   static int8_t conv1_out[81 * 64] ALIGNED;
+#ifndef OPT_QKV_SPAD_CHAIN  // with it, theta / phi / g live only in the scratchpad
   static int8_t theta[81 * 32] ALIGNED, phi[81 * 32] ALIGNED, g[81 * 32] ALIGNED;
+#endif
   static int8_t attention_raw[81 * 81] ALIGNED, attention[81 * 81] ALIGNED;
   static int8_t attended[81 * 32] ALIGNED, nlb_conv_out[81 * 64] ALIGNED, nlb_out[81 * 64] ALIGNED;
   static int8_t conv2_out[49 * 32] ALIGNED, conv3_out[25 * 8] ALIGNED;
@@ -428,7 +523,11 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
 
     // NLB: the three 1x1 convs read the same input and are independent, so
     // one fence covers all three.
-#ifdef OPT_QKV_LOOP_WS
+#if defined(OPT_QKV_SPAD_CHAIN)
+    qkv_matmul_to_spad(conv1_out, w_theta, b_theta, THETA_SPAD_ROW, nlb_theta_scale[0]);
+    qkv_matmul_to_spad(NULL, w_phi, b_phi, PHI_SPAD_ROW, nlb_phi_scale[0]);
+    qkv_matmul_to_spad(NULL, w_g, b_g, G_SPAD_ROW, nlb_g_scale[0]);
+#elif defined(OPT_QKV_LOOP_WS)
     qkv_matmul(conv1_out, w_theta, b_theta, theta, nlb_theta_scale[0]);
 #ifdef OPT_QKV_REUSE_A
     qkv_matmul(NULL, w_phi, b_phi, phi, nlb_phi_scale[0]);
@@ -444,7 +543,11 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
 #endif
     gemmini_fence();
     MARK(2, "nlb_qkv");
+#ifdef OPT_QKV_SPAD_CHAIN
+    matmul_theta_phi_spad(attention_raw, nlb_matmul_scale[0]);
+#else
     matmul_theta_phi(theta, phi, attention_raw, nlb_matmul_scale[0]);
+#endif
     MARK(3, "theta_phi");
 #ifdef OPT_NLB_SPAD_CHAIN
     softmax_81_to_spad(attention_raw, softmax_input_scale[0], softmax_output_scale[0]);
@@ -453,7 +556,11 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
 #else
     softmax_81(attention_raw, attention, softmax_input_scale[0], softmax_output_scale[0]);
     MARK(4, "softmax");
+#ifdef OPT_QKV_SPAD_CHAIN
+    matmul_attention_g_gspad(attention, attended, nlb_matmul_1_scale[0]);
+#else
     matmul_attention_g(attention, g, attended, nlb_matmul_1_scale[0]);
+#endif
 #endif
     MARK(5, "attention_g");
     conv1x1(attended, 32, w_nlb_out, b_nlb_out, nlb_conv_out, 64, nlb_out_scale[0]);

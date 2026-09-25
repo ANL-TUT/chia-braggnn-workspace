@@ -17,7 +17,16 @@ from evolve_flows.evolver.types import EvolverInput
 from firesim import read_gemmini_params_h
 
 from constants import DEFAULT_OUTPUT_BASE, PACKAGE_DIR
-from prompts import _EXO_SEED, _GEMMINI_PY, _MVOUT_SPAD_SECTION
+from prompts import (
+    _EXO_BASE,
+    _EXO_SEED,
+    _GEMMINI_PY,
+    _LOWERING_PY,
+    _MVOUT_SPAD_SECTION,
+    _REFERENCE_PY,
+    _SCHEDULE_FUSION_PY,
+    _SCHEDULE_LOWLEVEL_PY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +190,40 @@ def run_alphaevolve_search(
         "make_loop_* function builds an Exo `@instr` whose body is a plain loop "
         "nest (the semantics `replace` matches against) and whose C string is "
         "one Gemmini hardware-loop instruction sequence:\n\n"
-        f"```python\n{_GEMMINI_PY}\n```"
+        f"```python\n{_GEMMINI_PY}\n```\n\n"
+        "## The algorithm specs (`braggnn_reference.py`, read-only)\n\n"
+        "Imported by the program as `from braggnn_reference import ...`: the "
+        "shape constants and the `*_cpu` procs your schedule starts from. Their "
+        "loop nests and loop / buffer names are what `replace`, `divide_loop`, "
+        "`reorder_loops`, `fission`, `fuse`, `find_loop` and the other "
+        "scheduling operations refer to:\n\n"
+        f"```python\n{_REFERENCE_PY}\n```\n\n"
+        "## Pre-checked lowering helper `braggnn_lowering.py` (read-only, importable)\n\n"
+        "Written next to your program before it is compiled, like gemmini.py. "
+        "`from braggnn_lowering import lower_conv`, then e.g. `conv2 = "
+        "lower_conv(conv2_cpu, CONV1_DIM, CONV1_FILTERS, CONV2_FILTERS, 3)` "
+        "(or conv3 with CONV2_DIM, CONV2_FILTERS, CONV3_FILTERS, 3) runs that "
+        "layer on low-level instrs instead of the hardware-loop macro. It is the "
+        "fusion reference's conv recipe, already known to pass Exo's checks, so "
+        "use it (or copy it into your program and change it) as the starting "
+        "point for scheduling a layer's loop nest yourself:\n\n"
+        f"```python\n{_LOWERING_PY}\n```\n\n"
+        "## The original seed `braggnn_schedule.py` (read-only)\n\n"
+        "The shipped schedule the search started from (45,170 cycles), as it "
+        "was before any evolution. The program you edit descends from it; this "
+        "copy is for reference only:\n\n"
+        f"```python\n{_EXO_BASE}\n```\n\n"
+        "## Reference schedule `braggnn_schedule_fusion.py` (read-only)\n\n"
+        "The fusion reference described above, in full: a worked example of "
+        "loop-nest scheduling that passes Exo's checks (conv2 and conv3 lowered "
+        "to low-level instrs). Reuse its techniques inside your program; do "
+        "not submit it or paste it in wholesale:\n\n"
+        f"```python\n{_SCHEDULE_FUSION_PY}\n```\n\n"
+        "## Reference schedule `braggnn_schedule_lowlevel.py` (read-only)\n\n"
+        "The low-level reference described above, in full (every operator "
+        "except softmax on low-level instrs; slow overall). Same rule: take "
+        "techniques, not the whole program:\n\n"
+        f"```python\n{_SCHEDULE_LOWLEVEL_PY}\n```"
         + (
             "\n\n## What the hardware-tuning process changed this attempt, "
             "in its own words\n\n"

@@ -429,8 +429,11 @@ def run_flow(
     config_path: str = DEFAULT_CONFIG,
     sw_only: bool = False,
     mvout_spad: bool = False,
+    seed_program: Optional[str] = None,
 ):
-    """Run one software search against the currently deployed hardware."""
+    """Run one software search against the currently deployed hardware,
+    starting from *seed_program* (a schedule's source with EVOLVE-BLOCK
+    markers) or, by default, the shipped seed."""
     if not ray.is_initialized():
         ray.init(address="auto")
     logging.basicConfig(
@@ -456,7 +459,7 @@ def run_flow(
     run = run_alphaevolve_search(
         dump,
         0,
-        SEED_PROGRAM,
+        seed_program or SEED_PROGRAM,
         firesim_ready,
         config_path=config_path,
         eval_dir=_eval_dir(output_dir),
@@ -486,6 +489,12 @@ def main() -> None:
         help="Results directory (default: ~/braggnn_loop_runs/<timestamp>)",
     )
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="AlphaEvolve config")
+    parser.add_argument(
+        "--seed-program", default=None,
+        help="SW search only: start from this schedule file (it must carry the "
+             "EVOLVE-BLOCK-START / -END markers, as saved candidates do) instead "
+             "of exo/braggnn_schedule.py",
+    )
     parser.add_argument(
         "--sw-only", action="store_true",
         help="Laptop test without a FireSim node: only the AlphaEvolve search, "
@@ -569,11 +578,18 @@ def main() -> None:
             mvout_spad=args.mvout_spad,
         )
     else:
+        seed_program = None
+        if args.seed_program:
+            seed_program = Path(args.seed_program).read_text()
+            if ("# EVOLVE-BLOCK-START" not in seed_program
+                    or "# EVOLVE-BLOCK-END" not in seed_program):
+                parser.error(f"{args.seed_program} has no EVOLVE-BLOCK markers")
         run_flow(
             output_dir=args.out_dir,
             config_path=args.config,
             sw_only=args.sw_only,
             mvout_spad=args.mvout_spad,
+            seed_program=seed_program,
         )
 
 

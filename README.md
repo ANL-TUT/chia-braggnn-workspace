@@ -46,6 +46,14 @@ uv run chia job submit --address <ADDR> --working-dir . \
 
 どちらも結果は `~/braggnn_loop_runs/<timestamp>/`。残すものは `results/` にコピーしてコミット。
 
+`scripts/sync_results.sh` を systemd のユーザータイマーで 30 分ごとに回すと、直近 90 分に更新された run を `results/<timestamp>/` に rsync して `origin/add-gcp-cluster` に push する（2 MB を超えるファイルは除外、変更がなければ何もしない）。作業は `~/.cache/chia-results-sync` の別 worktree で行うので、手元の checkout には触れない。自分の push の前には `git pull --rebase` が必要。
+
+```
+cp scripts/systemd/chia-results-sync.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now chia-results-sync.timer
+# 止める: systemctl --user disable --now chia-results-sync.timer
+```
+
 AlphaEvolve 版は、bitstream が mvout_spad（gemmini4xraymodels a7c2b9c 以降）に対応しているときだけ `--mvout-spad` を付ける。付けると `gemmini.py` の `st_acc_i8_act_spad*` を探索で使えるようになり、付けないとそれを使った候補はビルド前に弾かれる。
 
 ## システム構成

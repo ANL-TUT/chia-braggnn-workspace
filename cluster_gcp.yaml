@@ -21,7 +21,7 @@ gcp_nodes:
     zone: us-central1-b
 
     gcp_worker:
-        machine_type: e2-standard-8
+        machine_type: e2-standard-4
         count: 2                      # 0 = exo_compiler, 1 = opencode(+evolver)
         image: "projects/debian-cloud/global/images/family/debian-12"
         ssh_user: ${USER}             # local user auto-created on the VM
@@ -44,7 +44,7 @@ available_node_types:
               - "python3 -m pip install --no-user \"ray[default]==2.54.0\" \"fastapi==0.121.0\" exo-lang openai pyyaml tqdm numpy python-dotenv google-auth requests"
 
     exo_compiler:
-        resources: {"exo_build": 8}
+        resources: {"exo_build": 4}
         num_workers: 1
         compatible_ips: ["@gcp_worker:0"]
         # Fresh VMs have no local images, so pull the public base image and
@@ -88,7 +88,10 @@ head_env_commands:
 
 head_start_ray_commands:
     - "ray stop"
-    - "ray start --head --port=6379 --include-dashboard=True --dashboard-host=0.0.0.0 --dashboard-agent-listen-port=0"
+    # GCS health check: by default a node that misses a few checks (tens of
+    # seconds) is declared dead and its raylet exits; a tailnet hiccup did that
+    # to the exo_compiler worker. Tolerate ~5 min of lost heartbeats instead.
+    - "RAY_health_check_period_ms=5000 RAY_health_check_timeout_ms=20000 RAY_health_check_failure_threshold=60 ray start --head --port=6379 --include-dashboard=True --dashboard-host=0.0.0.0 --dashboard-agent-listen-port=0"
 
 worker_start_ray_commands:
     - "ray stop"

@@ -28,6 +28,14 @@ _PARAM_PHASE = _load_prompt("param_phase.md")
 # Helper module imported by the seed (`from gemmini import ...`); written next
 # to every candidate before exocc runs. Read-only for the search.
 _GEMMINI_PY = (EXO_DIR / "gemmini.py").read_text()
+# Also shown to the search, read-only: the *_cpu specs the seed schedules
+# (loop nests and their names), and the two reference schedules whose ideas
+# problem_description describes.
+_REFERENCE_PY = (EXO_DIR / "braggnn_reference.py").read_text()
+# Pre-checked conv lowering (lower_conv) a schedule may import and call.
+_LOWERING_PY = (EXO_DIR / "braggnn_lowering.py").read_text()
+_SCHEDULE_FUSION_PY = (EXO_DIR / "braggnn_schedule_fusion.py").read_text()
+_SCHEDULE_LOWLEVEL_PY = (EXO_DIR / "braggnn_schedule_lowlevel.py").read_text()
 
 # The EVOLVE-BLOCK is the scheduling section, from the tile constant through the
 # `braggnn_eval = schedule_eval()` binding (schedule_eval is inside so the search

@@ -94,6 +94,7 @@ def prepare_work_dir(
     shutil.copy(source / schedule_name, work / "braggnn_schedule.py")
     shutil.copy(SHIPPED_EXO_DIR / "gemmini.py", work / "gemmini.py")
     shutil.copy(SHIPPED_EXO_DIR / "braggnn_reference.py", work / "braggnn_reference.py")
+    shutil.copy(SHIPPED_EXO_DIR / "braggnn_lowering.py", work / "braggnn_lowering.py")
     for reference in (
         "braggnn_schedule_lowlevel.py",
         "braggnn_schedule_fusion.py",
@@ -188,7 +189,8 @@ def build_candidate_elf(
         source_path = build / "braggnn_schedule.py"
         source_path.write_text(program_source)
 
-        for name in ("gemmini.py", "braggnn_reference.py", *HARNESS_FILES):
+        for name in ("gemmini.py", "braggnn_reference.py", "braggnn_lowering.py",
+                     *HARNESS_FILES):
             shutil.copy(SHIPPED_EXO_DIR / name, build / name)
         for name in HARNESS_DIRS:
             shutil.copytree(SHIPPED_EXO_DIR / name, build / name)
