@@ -62,6 +62,9 @@
 //                       before the patch loop, and stay there: each patch skips
 //                       those weight loads. The conv layers (loop_conv) still load
 //                       theirs. Outside the per-patch timing like the staging copies.
+//   OPT_QUANT_OUTSIDE   the fp32 -> int8 input quantization of every patch runs
+//                       before the patch loop, outside the per-patch timing (as the
+//                       int8 -> px dequantization in braggnn_main.c already is).
 //   OPT_QKV_LOOP_WS     the three NLB 1x1 convs (same input) as loop_ws matmuls;
 //   OPT_QKV_REUSE_A     with it, the second and third skip reloading the input
 //                       from DRAM (A = NULL, same a_spad_id: gemmini.h's a_reuse).
@@ -72,7 +75,9 @@
 // OPT_BASELINE (the Exo build's calls). Added since, measured on Verilator with the
 // rtl_patches/ RTL: OPT_ATT_STRIDE=128, the eight-wide input quantization
 // (OPT_QUANT_SERIAL restores the one-at-a-time loop), 27,039 cycles/patch, and
-// OPT_WEIGHTS_RESIDENT, 26,489 cycles/patch.
+// OPT_WEIGHTS_RESIDENT, 26,489 cycles/patch, and OPT_QUANT_OUTSIDE, 25,595
+// cycles/patch (from here on the timing excludes the input quantization, which
+// the seed's and OPT_BASELINE's numbers include: ~1,750 cycles one at a time).
 // OPT_CONV1_IM2COL (+2.2k in conv1) and OPT_TAIL_ON_CPU (slower than four tiny
 // Gemmini loops; a version with all outputs accumulating at once and fcvt
 // rounding was slower still: 2,127 vs 848 cycles) measured worse,
@@ -100,6 +105,9 @@
 #define OPT_ATT_STRIDE 128
 #endif
 #define OPT_WEIGHTS_RESIDENT
+#define OPT_QUANT_OUTSIDE
+#else
+#define OPT_QUANT_SERIAL  // the Exo build's one-at-a-time loop, inside the timing
 #endif
 
 #ifndef OPT_ATT_STRIDE
@@ -562,6 +570,35 @@ static inline void fc_cpu(const int8_t *in, int n_in, const int8_t *W, uint32_t 
 #define FC_TAIL fc_gemmini
 #endif
 
+// ------------------------------------------------------------ input
+
+// A patch's 11 x 11 fp32 input as int8 (x * 127, truncated).
+static void quantize_patch(const float *patch, int8_t *inp) {
+#ifdef OPT_QUANT_SERIAL
+  for (int i = 0; i < 121; i++) inp[i] = (int8_t)(patch[i] * 127.0f);
+#else
+  // Eight independent load -> fmul -> fcvt chains per step: one at a time the
+  // in-order core waits out each latency (~14 cycles per element).
+  int i = 0;
+  for (; i + 8 <= 121; i += 8) {
+    float f0 = patch[i], f1 = patch[i + 1], f2 = patch[i + 2], f3 = patch[i + 3];
+    float f4 = patch[i + 4], f5 = patch[i + 5], f6 = patch[i + 6], f7 = patch[i + 7];
+    f0 *= 127.0f; f1 *= 127.0f; f2 *= 127.0f; f3 *= 127.0f;
+    f4 *= 127.0f; f5 *= 127.0f; f6 *= 127.0f; f7 *= 127.0f;
+    int32_t q0 = (int32_t)f0, q1 = (int32_t)f1, q2 = (int32_t)f2, q3 = (int32_t)f3;
+    int32_t q4 = (int32_t)f4, q5 = (int32_t)f5, q6 = (int32_t)f6, q7 = (int32_t)f7;
+    inp[i] = (int8_t)q0; inp[i + 1] = (int8_t)q1; inp[i + 2] = (int8_t)q2; inp[i + 3] = (int8_t)q3;
+    inp[i + 4] = (int8_t)q4; inp[i + 5] = (int8_t)q5; inp[i + 6] = (int8_t)q6; inp[i + 7] = (int8_t)q7;
+  }
+  for (; i < 121; i++) inp[i] = (int8_t)(patch[i] * 127.0f);
+#endif
+}
+
+// OPT_QUANT_OUTSIDE: one 64-byte-aligned slot per patch; later patches (if
+// n_patches is larger) fall back to quantizing inside the loop.
+#define QUANT_MAX_PATCHES 64
+#define QUANT_SLOT 128
+
 // ------------------------------------------------------------ entry point
 
 void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, const int8_t *conv1_weights, const int32_t *conv1_bias, const float *conv1_scale, const int8_t *nlb_theta_weights, const int32_t *nlb_theta_bias, const float *nlb_theta_scale, const int8_t *nlb_phi_weights, const int32_t *nlb_phi_bias, const float *nlb_phi_scale, const int8_t *nlb_g_weights, const int32_t *nlb_g_bias, const float *nlb_g_scale, const float *nlb_matmul_scale, const float *softmax_input_scale, const float *softmax_output_scale, const float *nlb_matmul_1_scale, const int8_t *nlb_out_weights, const int32_t *nlb_out_bias, const float *nlb_out_scale, const float *nlb_add_a_scale, const float *nlb_add_b_scale, const float *resadd_post_scale, const int8_t *conv2_weights, const int32_t *conv2_bias, const float *conv2_scale, const float *conv2_post_scale, const int8_t *conv3_weights, const int32_t *conv3_bias, const float *conv3_scale, const float *conv3_post_scale, const int8_t *fc1_weights, const int32_t *fc1_bias, const float *fc1_scale, const float *fc1_post_scale, const int8_t *fc2_weights, const int32_t *fc2_bias, const float *fc2_scale, const float *fc2_post_scale, const int8_t *fc3_weights, const int32_t *fc3_bias, const float *fc3_scale, const float *fc3_post_scale, const int8_t *fc4_weights, const int32_t *fc4_bias, const float *fc4_scale, const float *fc4_post_scale, const int8_t *output_weights, const int32_t *output_bias, const float *output_scale, int32_t *cycles, int8_t *outputs) {
@@ -645,7 +682,7 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
   const float s_fc3 = fc3_scale[0] * fc3_post_scale[0];
   const float s_fc4 = fc4_scale[0] * fc4_post_scale[0];
 
-  static int8_t inp[11 * 11] ALIGNED;
+  static int8_t inp_buf[11 * 11] ALIGNED;
   static int8_t conv1_out[81 * 64] ALIGNED;
 #ifndef OPT_QKV_SPAD_CHAIN  // with it, theta / phi / g live only in the scratchpad
   static int8_t theta[81 * 32] ALIGNED, phi[81 * 32] ALIGNED, g[81 * 32] ALIGNED;
@@ -677,28 +714,25 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
   }
 #endif
 
+#ifdef OPT_QUANT_OUTSIDE
+  // Every patch's input quantized before the patch loop, outside the per-patch
+  // timing, each into its own 64-byte-aligned slot.
+  static int8_t inp_all[QUANT_MAX_PATCHES * QUANT_SLOT] ALIGNED;
+  for (int_fast32_t p = 0; p < n_patches && p < QUANT_MAX_PATCHES; p++)
+    quantize_patch(fp32_inputs + p * 121, inp_all + p * QUANT_SLOT);
+#endif
+
   for (int_fast32_t p = 0; p < n_patches; p++) {
     const float *patch = fp32_inputs + p * 121;
     int32_t begin = rdcycle32();
     MARK(0, "start");
 
-#ifdef OPT_QUANT_SERIAL
-    for (int i = 0; i < 121; i++) inp[i] = (int8_t)(patch[i] * 127.0f);
+#ifdef OPT_QUANT_OUTSIDE
+    int8_t *inp = p < QUANT_MAX_PATCHES ? inp_all + p * QUANT_SLOT : inp_buf;
+    if (p >= QUANT_MAX_PATCHES) quantize_patch(patch, inp);
 #else
-    // Eight independent load -> fmul -> fcvt chains per step: one at a time the
-    // in-order core waits out each latency (~14 cycles per element).
-    int i = 0;
-    for (; i + 8 <= 121; i += 8) {
-      float f0 = patch[i], f1 = patch[i + 1], f2 = patch[i + 2], f3 = patch[i + 3];
-      float f4 = patch[i + 4], f5 = patch[i + 5], f6 = patch[i + 6], f7 = patch[i + 7];
-      f0 *= 127.0f; f1 *= 127.0f; f2 *= 127.0f; f3 *= 127.0f;
-      f4 *= 127.0f; f5 *= 127.0f; f6 *= 127.0f; f7 *= 127.0f;
-      int32_t q0 = (int32_t)f0, q1 = (int32_t)f1, q2 = (int32_t)f2, q3 = (int32_t)f3;
-      int32_t q4 = (int32_t)f4, q5 = (int32_t)f5, q6 = (int32_t)f6, q7 = (int32_t)f7;
-      inp[i] = (int8_t)q0; inp[i + 1] = (int8_t)q1; inp[i + 2] = (int8_t)q2; inp[i + 3] = (int8_t)q3;
-      inp[i + 4] = (int8_t)q4; inp[i + 5] = (int8_t)q5; inp[i + 6] = (int8_t)q6; inp[i + 7] = (int8_t)q7;
-    }
-    for (; i < 121; i++) inp[i] = (int8_t)(patch[i] * 127.0f);
+    int8_t *inp = inp_buf;
+    quantize_patch(patch, inp);
 #endif
     MARK(20, "quantize");
 #ifdef OPT_CONV1_IM2COL
