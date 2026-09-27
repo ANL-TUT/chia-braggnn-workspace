@@ -290,3 +290,49 @@ First run, A-M RTL, 30-minute timeout per test: **29 / 51 passed, 1 failed,
 
 **Total: 42 / 51 pass, 1 pre-existing failure (matmul_spad), 8 without a
 verdict.**
+
+---
+
+## Future work (not started)
+
+Beyond the constraints used so far (ISA unchanged, 16x16 array, stock
+SoC), the user allowed changing the ISA, the array, the scratchpad ports and
+the system bus, provided the design stays programmable (nothing specific to
+BraggNN's shapes) and the area does not grow much (working target: no SRAM
+capacity added, logic within roughly +30% of Gemmini's). Time left in the
+22,743-cycle build: ~11-12k array-bound, ~4-5k bus / DRAM-bound (softmax,
+resadd, loads), ~2k fixed per-loop overhead.
+
+| Candidate | Expected gain (cycles/patch) | Area | Generality | Notes |
+|---|---|---|---|---|
+| A. System bus + Gemmini DMA 128 -> 256 bits | -1,000 .. -2,000 (~73 KB per patch moves over the bus) | small (bus / DMA buffers) | high | mostly configuration (`WithSystemBusWidth`, `dma_buswidth`); first check that the memory channel behind the system bus is not the narrower link |
+| B. Two 16x16 arrays fed the same A row, each holding a different weight tile (J-parallel) | -4,000 .. -5,000 (matmuls / convs with J >= 2 about 2x) | medium-large (PEs x2, accumulator write width x2) | high | largest lever; ExecuteController rework, or a "compute two tiles" instruction |
+| C. DIM 16 -> 32 | -5,000 or more | large (PEs x4, rows twice as wide; the 64 KB accumulator then has too few rows) | high | over the area target; only as an upper-bound reference |
+| D. Dual-ported scratchpad | small (a few hundred; bank conflicts were not a main cost) | large (256 KB SRAM ~1.5-2x) | high | not worth it |
+| E. Ordering between loops in hardware (a loop's loads wait for the previous loop's DRAM writes), so the per-layer CPU fences can go | up to ~-700 | small | high | ISA-visible semantics (or an ordering flag in LOOP_WS / LOOP_CONV_WS) |
+| F. Normalizer taking two blocks per cycle | softmax -500 .. -1,000 | small-medium | medium (softmax / layernorm workloads) | |
+| G. Weight-region address for conv loops (a loop_conv counterpart of `LOOP_WS_CONFIG_SPAD_AB`) | a few hundred (resident conv weights without the two fixed regions) | ~0 | high | small ISA addition |
+| H. Softmax sequence in the scratchpad store unit (`LoopMatmulStCSpad`) | a few hundred (softmax output chained) | small | medium | needed to chain the softmax output |
+
+Suggested order: A, then B (design first: hardware pairing of existing
+commands vs. a new instruction; small-matrix tests before BraggNN), then F,
+E, G, H; C only as a reference.
+
+### Other open items
+- FireSim confirmation of the A-P RTL (needs a bitstream, ~5 h).
+- Area / power synthesis (`src/hammer_ppa.py`, sky130; needs a VLSI node).
+- gemmini-rocc-tests that did not finish on Verilator: conv and its
+  dilation / rot180 / negative-padding variants,
+  conv_trans_input_3120_with_kernel_dilation, tiled_matmul_option (> 3 h),
+  conv_with_pool on A-P (stopped after 55 min; passes on A-M).
+- `src/verilator_eval.py` could not build the Exo seed's ELF on 2026-09-26
+  (Cython / pysmt compile error on the exo_build node).
+
+### Environment state (2026-09-26)
+- The chia / Ray cluster (GCP VMs + firesim node) is retired; every
+  evaluation above ran through it (`src/verilator_elf.py`, `src/hw_sweep.py`,
+  `src/rocc_tests.py`, `src/node_rtl.py`, `src/node_ps.py` submit Ray jobs).
+  Future RTL work needs another way to reach a Verilator / FireSim machine.
+- The firesim node's shared `~/gemmini4xraymodels` still carries A-P in place
+  (`rtl_patches/combined_A-P.patch`); revert with
+  `git -C ~/gemmini4xraymodels checkout -- src/main/scala` on the node.
