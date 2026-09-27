@@ -70,6 +70,13 @@
 //                       8192); theta*phi^T and attention*g load their B elsewhere.
 //   OPT_CONV2_RESIDENT  conv2's weights (18 KB) likewise stay in the scratchpad, at
 //                       the top (b_spad_id = 2 fixes the conv loop's weight region).
+//   OPT_ATTG_SPAD_CHAIN with OPT_QKV_SPAD_CHAIN: attention*g's output stays in the
+//                       scratchpad (spad_only store) as the NLB output matmul's A.
+//   OPT_SPAD_ACC2       the chained spad_only loops alternate accumulator halves
+//                       (inc_acc_addr); required by the chains.
+//   OPT_FOR_PATCHED_RTL adds OPT_QKV_SPAD_CHAIN + OPT_ATTG_SPAD_CHAIN + OPT_SPAD_ACC2 to
+//                       the default set; only for the rtl_patches/combined_A-P.patch RTL
+//                       (Verilator: 22,751 cycles/patch there vs 23,271 without).
 //   OPT_QUANT_OUTSIDE   the fp32 -> int8 input quantization of every patch runs
 //                       before the patch loop, outside the per-patch timing (as the
 //                       int8 -> px dequantization in braggnn_main.c already is).
@@ -119,6 +126,14 @@
 #define OPT_CONV1_WINDOW
 #define OPT_CONV3_RESIDENT
 #define OPT_QUANT_OUTSIDE
+#ifdef OPT_FOR_PATCHED_RTL
+// Needs rtl_patches/combined_A-P.patch (N: a spad_only loop's D follows
+// inc_acc_addr, O: mvout_spad issues in order, P: 16 store RS entries); on the
+// stock RTL the accumulator double-buffering puts the bias in the wrong half.
+#define OPT_QKV_SPAD_CHAIN
+#define OPT_ATTG_SPAD_CHAIN
+#define OPT_SPAD_ACC2
+#endif
 #else
 #define OPT_QUANT_SERIAL  // the Exo build's one-at-a-time loop, inside the timing
 #endif
@@ -127,7 +142,7 @@
 #define OPT_ATT_STRIDE 81
 #endif
 #define ATT_S OPT_ATT_STRIDE
-#if ATT_S != 81 && (defined(OPT_NLB_SPAD_CHAIN) || defined(OPT_QKV_SPAD_CHAIN))
+#if ATT_S != 81 && defined(OPT_NLB_SPAD_CHAIN)
 #error "the spad chains keep the 81-byte stride: add -DOPT_ATT_STRIDE=81"
 #endif
 
@@ -156,11 +171,36 @@ static inline int32_t rdcycle32(void) {
 #define LOOP_SKIP_LDA (1 << 3)
 #define LOOP_SKIP_LDB (1 << 4)
 #define LOOP_SPAD_ONLY (1 << 9)
-// OPT_QKV_SPAD_CHAIN placement (12 tiles = 192 rows each; bank = row / 4096).
+#define LOOP_INC_ACC_ADDR (1 << 8)  // spad_only loop: use the next accumulator half
+// Scratchpad chains (12 tiles = 192 rows each; bank = row / 4096). The banks
+// are single-ported (a write blocks that bank's reads for the cycle), so no
+// loop writes a bank it reads: qkv reads bank 0 (A) and 2 (resident B) and
+// writes theta / g to bank 1 (free between region 1's A from row 0 and conv3's
+// weights from 7904) and phi to bank 3; theta*phi^T reads banks 1 and 3;
+// attention*g reads 0 and 1 and writes bank 3; the NLB output reads 3 and 2.
 #define SPAD_BANK_ROWS 4096
-#define THETA_SPAD_ROW (2 * SPAD_BANK_ROWS)
-#define G_SPAD_ROW (2 * SPAD_BANK_ROWS + 256)
+#define THETA_SPAD_ROW (1 * SPAD_BANK_ROWS)
+#define G_SPAD_ROW (THETA_SPAD_ROW + 192)
 #define PHI_SPAD_ROW (3 * SPAD_BANK_ROWS)
+#define ATTD_SPAD_ROW (PHI_SPAD_ROW + 192)
+#if (defined(OPT_QKV_SPAD_CHAIN) || defined(OPT_ATTG_SPAD_CHAIN)) && !defined(OPT_SPAD_ACC2)
+// Without it the chained spad_only loops share one accumulator region, and a
+// later loop's computes can be admitted to the reservation station before an
+// earlier loop's mvout_spads that still read those rows (predictions changed
+// with 16 store RS entries).
+#error "the scratchpad chains need OPT_SPAD_ACC2 (and the RTL of rtl_patches/combined_A-P.patch)"
+#endif
+#if defined(OPT_ATTG_SPAD_CHAIN) && (!defined(OPT_QKV_SPAD_CHAIN) || !defined(OPT_WEIGHTS_RESIDENT))
+#error "OPT_ATTG_SPAD_CHAIN needs OPT_QKV_SPAD_CHAIN (g in the scratchpad) and OPT_WEIGHTS_RESIDENT"
+#endif
+// OPT_SPAD_ACC2: spad_only loops alternate accumulator halves (needs the RTL's
+// ldD to follow inc_acc_addr, rtl_patches/N), so the next loop's computes do
+// not wait for this one's mvout_spads to read its accumulator rows.
+#ifdef OPT_SPAD_ACC2
+#define SPAD_ACC_FLAGS LOOP_INC_ACC_ADDR
+#else
+#define SPAD_ACC_FLAGS 0
+#endif
 #define LOOP_REGION1_A_START 0
 #define LOOP_REGION1_B_END (2 * SPAD_BANK_ROWS)  // max_addr / concurrent_loops
 
@@ -173,8 +213,7 @@ static inline int32_t rdcycle32(void) {
 #endif
 
 #ifdef OPT_WEIGHTS_RESIDENT
-#if !defined(OPT_QKV_LOOP_WS) || !defined(OPT_NLBOUT_LOOP_WS) || defined(OPT_QKV_SPAD_CHAIN) || \
-    defined(OPT_TAIL_ON_CPU)
+#if !defined(OPT_QKV_LOOP_WS) || !defined(OPT_NLBOUT_LOOP_WS) || defined(OPT_TAIL_ON_CPU)
 #error "OPT_WEIGHTS_RESIDENT needs the loop_ws qkv / NLB-out / fc path"
 #endif
 // The loop_ws layers' weights stay in scratchpad rows from bank 2 on, above
@@ -396,8 +435,8 @@ static void nlb_out_matmul(const int8_t *inp, const int8_t *w, uint32_t b_end,
 // qkv_matmul, but C goes to scratchpad row dst_row (spad_only store). With
 // spad_only the execute unit takes A / B from the SPAD_AB addresses, so set
 // them to where the id-1 loaders put A and B (region 1). inp == NULL reuses A.
-static void qkv_matmul_to_spad(const int8_t *inp, const int8_t *w, const int32_t *bias,
-                               uint32_t dst_row, float scale) {
+static void qkv_matmul_to_spad(const int8_t *inp, const int8_t *w, uint32_t b_end,
+                               const int32_t *bias, uint32_t dst_row, float scale) {
   gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
   gemmini_extended_config_st(32, NO_ACTIVATION, scale);
   gemmini_extended3_config_ld(64, 1.0f, false, 0);
@@ -408,12 +447,13 @@ static void qkv_matmul_to_spad(const int8_t *inp, const int8_t *w, const int32_t
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, bias, 0, k_LOOP_WS_CONFIG_ADDRS_DC);
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 64, 32, k_LOOP_WS_CONFIG_STRIDES_AB);
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, 0, k_LOOP_WS_CONFIG_STRIDES_DC);
-  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, LOOP_REGION1_A_START, LOOP_REGION1_B_END,
+  // B: resident (b_end, b_spad_id 0) or loaded into region 1.
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, LOOP_REGION1_A_START, b_end ? b_end : LOOP_REGION1_B_END,
                            k_LOOP_WS_CONFIG_SPAD_AB);
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC,
-                           ((uint64_t)1 << 18) | ((uint64_t)1 << 16) |
+                           ((uint64_t)1 << 18) | ((uint64_t)(b_end ? 0 : 1) << 16) |
                                ((uint64_t)NO_ACTIVATION << 8) | 1 /* ex_accumulate: bias */,
-                           ((uint64_t)dst_row << 32) | LOOP_SPAD_ONLY, k_LOOP_WS);
+                           ((uint64_t)dst_row << 32) | LOOP_SPAD_ONLY | SPAD_ACC_FLAGS, k_LOOP_WS);
 }
 #endif
 
@@ -461,7 +501,7 @@ static void matmul_theta_phi(const int8_t *A, const int8_t *B, int8_t *C, float 
 // theta * phi^T with theta and phi already in the scratchpad (banks 2 and 3).
 static void matmul_theta_phi_spad(int8_t *C, float scale) {
   gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 1);
-  gemmini_extended_config_st(81, NO_ACTIVATION, scale);
+  gemmini_extended_config_st(ATT_S, NO_ACTIVATION, scale);
   gemmini_extended3_config_ld(32, 1.0f, false, 0);
   gemmini_extended3_config_ld(32, 1.0f, false, 1);
   gemmini_extended3_config_ld(81, 1.0f, false, 2);
@@ -469,7 +509,7 @@ static void matmul_theta_phi_spad(int8_t *C, float scale) {
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, 0, k_LOOP_WS_CONFIG_ADDRS_AB);
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, C, k_LOOP_WS_CONFIG_ADDRS_DC);
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 32, 32, k_LOOP_WS_CONFIG_STRIDES_AB);
-  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 81, 81, k_LOOP_WS_CONFIG_STRIDES_DC);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 81, ATT_S, k_LOOP_WS_CONFIG_STRIDES_DC);
   // B tiles (j,k) sit at b_addr_end - 6*2*16 + (j*2 + k)*16.
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, THETA_SPAD_ROW, PHI_SPAD_ROW + 6 * 2 * DIM,
                            k_LOOP_WS_CONFIG_SPAD_AB);
@@ -583,19 +623,44 @@ static void matmul_attention_g_spad(const int8_t *B, int8_t *C, float scale) {
 static void matmul_attention_g_gspad(const int8_t *A, int8_t *C, float scale) {
   gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
   gemmini_extended_config_st(32, NO_ACTIVATION, scale);
-  gemmini_extended3_config_ld(81, 1.0f, false, 0);
+  gemmini_extended3_config_ld(ATT_S, 1.0f, false, 0);
   gemmini_extended3_config_ld(32, 1.0f, false, 1);
   gemmini_extended3_config_ld(32, 1.0f, false, 2);
   LOOP_BOUNDS(6, 2, 6, 15, 0, 15);
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, A, 0, k_LOOP_WS_CONFIG_ADDRS_AB);
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, C, k_LOOP_WS_CONFIG_ADDRS_DC);
-  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 81, 32, k_LOOP_WS_CONFIG_STRIDES_AB);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ATT_S, 32, k_LOOP_WS_CONFIG_STRIDES_AB);
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 32, 32, k_LOOP_WS_CONFIG_STRIDES_DC);
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, 0, G_SPAD_ROW + 6 * 2 * DIM, k_LOOP_WS_CONFIG_SPAD_AB);
   // a_spad_id = 1 (region 1, where ldA puts A), b_ex_spad_id = 0 (b_addr_end).
+#ifdef OPT_ATTG_SPAD_CHAIN
+  // The output stays in the scratchpad (ATTD_SPAD_ROW) for the NLB output
+  // matmul; C = NULL, and the spad_only execute unit reads A / B from the
+  // SPAD_AB addresses, i.e. A from region 1 (row 0, where ldA put it).
+  (void)C;
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)1 << 18) | ((uint64_t)NO_ACTIVATION << 8),
+                           ((uint64_t)ATTD_SPAD_ROW << 32) | LOOP_SPAD_ONLY | SPAD_ACC_FLAGS |
+                               LOOP_SKIP_LDB, k_LOOP_WS);
+#else
   ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)1 << 18) | ((uint64_t)NO_ACTIVATION << 8),
                            LOOP_SKIP_LDB, k_LOOP_WS);
+#endif
   gemmini_fence();
+}
+#endif
+
+#ifdef OPT_ATTG_SPAD_CHAIN
+// NLB output matmul with A (attention*g's 81 x 32 output) already in the
+// scratchpad at ATTD_SPAD_ROW (tile (i, k) at + (i*2 + k)*16, as the spad_only
+// store left it) and B resident: both loads skipped (A = B = NULL).
+static void nlb_out_matmul_spad(uint32_t b_end, const int32_t *bias, int8_t *out, float scale) {
+  gemmini_extended_config_ex(WEIGHT_STATIONARY, 0, 0, 1, 0, 0);
+  gemmini_extended_config_st(64, NO_ACTIVATION, scale);
+  gemmini_extended3_config_ld(64, 1.0f, false, 1);
+  gemmini_extended3_config_ld(0, 1.0f, false, 2);
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ATTD_SPAD_ROW, b_end, k_LOOP_WS_CONFIG_SPAD_AB);
+  gemmini_loop_ws(6, 4, 2, 15, 0, 0, NULL, NULL, bias, out, 32, 64, 0, 64,
+                  0, 0, 0, 0, 1, NO_ACTIVATION, 0, 0, 0);
 }
 #endif
 
@@ -870,17 +935,18 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
       qkv_matmul(conv1_out, w_phi, 0u, b_phi, rp, nlb_phi_scale[0]);
       qkv_matmul(conv1_out, w_g, 0u, b_g, rg, nlb_g_scale[0]);
       gemmini_fence();
-      qkv_matmul_to_spad(conv1_out, w_theta, b_theta, THETA_SPAD_ROW, nlb_theta_scale[0]);
-      qkv_matmul_to_spad(NULL, w_phi, b_phi, PHI_SPAD_ROW, nlb_phi_scale[0]);
-      qkv_matmul_to_spad(NULL, w_g, b_g, G_SPAD_ROW, nlb_g_scale[0]);
+      qkv_matmul_to_spad(conv1_out, w_theta, 0u, b_theta, THETA_SPAD_ROW, nlb_theta_scale[0]);
+      qkv_matmul_to_spad(NULL, w_phi, 0u, b_phi, PHI_SPAD_ROW, nlb_phi_scale[0]);
+      qkv_matmul_to_spad(NULL, w_g, 0u, b_g, G_SPAD_ROW, nlb_g_scale[0]);
       spad_vs_dram(THETA_SPAD_ROW, rt, "theta");
       spad_vs_dram(PHI_SPAD_ROW, rp, "phi");
       spad_vs_dram(G_SPAD_ROW, rg, "g");
     }
 #endif
-    qkv_matmul_to_spad(conv1_out, w_theta, b_theta, THETA_SPAD_ROW, nlb_theta_scale[0]);
-    qkv_matmul_to_spad(NULL, w_phi, b_phi, PHI_SPAD_ROW, nlb_phi_scale[0]);
-    qkv_matmul_to_spad(NULL, w_g, b_g, G_SPAD_ROW, nlb_g_scale[0]);
+    qkv_matmul_to_spad(conv1_out, RES_B(w_theta, WRES_THETA), b_theta, THETA_SPAD_ROW,
+                       nlb_theta_scale[0]);
+    qkv_matmul_to_spad(NULL, RES_B(w_phi, WRES_PHI), b_phi, PHI_SPAD_ROW, nlb_phi_scale[0]);
+    qkv_matmul_to_spad(NULL, RES_B(w_g, WRES_G), b_g, G_SPAD_ROW, nlb_g_scale[0]);
 #elif defined(OPT_QKV_LOOP_WS)
     qkv_matmul(conv1_out, RES_B(w_theta, WRES_THETA), b_theta, theta, nlb_theta_scale[0]);
 #ifdef OPT_QKV_REUSE_A
@@ -917,7 +983,9 @@ void braggnn_eval(void *ctxt, int_fast32_t n_patches, const float *fp32_inputs, 
 #endif
 #endif
     MARK(5, "attention_g");
-#ifdef OPT_NLBOUT_LOOP_WS
+#if defined(OPT_ATTG_SPAD_CHAIN)
+    nlb_out_matmul_spad(WRES_NLBOUT, b_nlb_out, nlb_conv_out, nlb_out_scale[0]);
+#elif defined(OPT_NLBOUT_LOOP_WS)
     nlb_out_matmul(attended, RES_B(w_nlb_out, WRES_NLBOUT), b_nlb_out, nlb_conv_out,
                    nlb_out_scale[0]);
 #else

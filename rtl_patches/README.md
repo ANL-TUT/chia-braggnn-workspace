@@ -5,7 +5,7 @@ Patches against gemmini4xraymodels 771d30f (`generators/gemmini`). No ISA file
 gemmini_params.h is unchanged. Every accepted step printed exactly the seed's
 per-patch prediction errors on Verilator (`src/verilator_elf.py`).
 
-`combined_A-M.patch` is the accepted set in one diff (what the firesim node's
+`combined_A-P.patch` is the accepted set in one diff (what the firesim node's
 tree carries); the single-step files are relative to the step before them.
 
 Verilator, current-best C (warm cycles/patch; 2-patch runs up to G, 4-patch after):
@@ -23,7 +23,10 @@ Verilator, current-best C (warm cycles/patch; 2-patch runs up to G, 4-patch afte
 | (SW) | - | `OPT_ATT_STRIDE=128` in the C file (aligned 81x81 rows) | 28,830 |
 | K | K_inflight64 | `max_in_flight_mem_reqs` 16 -> 64 (Load/StoreController commands in flight 2 -> 5) | 27,841 |
 | L | L_rs_st_spad_opb | bug fix: the RS kept no accumulator source for mvout_spad entries (opb wiped for all ld/st entries), so a later compute could overwrite accumulator rows a mvout_spad was still reading (AccumulatorMem "reading from and writing to same address" assertion in the qkv scratchpad chain) | 23,834 (unchanged) |
-| M | M_dma_writer_pipelined | StreamWriter gathers the next row's blocks while it writes the current row (a 2-row queue between block gathering and the TileLink state machine) | 23,834 -> 23,481 (C file as of 4198f6c) |
+| M | M_dma_writer_pipelined | StreamWriter gathers the next row's blocks while it writes the current row (a 2-row queue between block gathering and the TileLink state machine) | 23,834 -> 23,271 (C file as of 4198f6c; first reported as -353 from a traced run) |
+| N | N_spad_only_acc_double_buffer | a spad_only loop's D (bias) load address follows inc_acc_addr like its compute / store addresses | enables the chains' accumulator double-buffering |
+| O | O_st_spad_pipelined | mvout_spad issues in order like other stores (loads / computes still wait for it until it completes) | |
+| P | P_rs_st16 | `reservation_station_entries_st` 8 -> 16: a mvout_spad holds its entry until its scratchpad write completes | chained C: 23,228 -> 22,751 |
 
 With L the C file's OPT_QKV_SPAD_CHAIN runs bit-exact, but slower than the
 DRAM path (26,164 vs 25,780 with the same other flags): mvout_spad stores
@@ -35,6 +38,7 @@ quantization outside the timing, conv2/conv3 resident, conv1 as a
 sliding-window matmul: 23,834 cycles/patch.
 
 Tried and dropped: I_rs_ld16 (loads 8 -> 16, no change), IC2 (ld/st 16, -28).
+Joint sweep on the final C (`src/hw_sweep.py`, P_* patches): store RS 32 = 16; load RS 16 (+19 / -39); Normalizer stat ids 4 (+210 / +59); mvin scaler 8 units (+2,062); `max_in_flight_mem_reqs` 32 (+281 / +193).
 D_trace_diag / H_trace_conv_rs are printf-only diagnostics (run with
 `src/verilator_elf.py --trace TRC`), not part of the set.
 

@@ -1,11 +1,11 @@
 # BraggNN on Gemmini: hand-tuned C + RTL optimization report
 
-Status as of 2026-09-25. BraggNN inference (one 11x11 patch -> (x, y) peak
+Status as of 2026-09-26. BraggNN inference (one 11x11 patch -> (x, y) peak
 position, int8) on Gemmini (`GemminiRocketConfig`, 16x16 weight-stationary
 array, 256 KB scratchpad, 64 KB accumulator) with a Rocket core.
 
 **Result: 45,170 cycles/patch (Exo seed, FireSim) -> 34,028 (hand-tuned C,
-FireSim, stock RTL) -> 23,481 (C + RTL changes, Verilator).** Every step keeps
+FireSim, stock RTL) -> 22,751 (C + RTL co-optimized, Verilator).** Every step keeps
 the predictions identical to the seed's (bit-exact per-patch errors).
 
 | Stage | Where measured | cycles/patch | vs. previous |
@@ -14,12 +14,13 @@ the predictions identical to the seed's (bit-exact per-patch errors).
 | AlphaEvolve best schedule | FireSim, stock bitstream | 39,950 | -11.6% |
 | Hand-tuned C (`exo/braggnn_tune_opus.c`) | FireSim, stock bitstream | 34,028 | -14.8% |
 | Same C, unmodified RTL (771d30f) | Verilator | 33,814 | (reference for the RTL work) |
-| C + RTL changes A-K, M + later C changes | Verilator | **23,481** | -30.6% vs. 33,814 |
+| C + RTL changes A-M + later C changes | Verilator | 23,271 | -31.2% vs. 33,814 |
+| + joint HW/SW step: RTL N, O, P + scratchpad chains (`-DOPT_FOR_PATCHED_RTL`) | Verilator | **22,751** | -32.7% vs. 33,814 |
 
-The last row uses a narrower timing definition than the others (input
+The last two rows use a narrower timing definition than the others (input
 quantization and a one-time weight preload are outside the timed region);
 see [Measurement](#how-it-was-measured). Under the original definition the
-same build is roughly 23,481 + ~1,000 (quantization) cycles, plus the weight
+same build is roughly 22,751 + ~1,000 (quantization) cycles, plus the weight
 loads that residency removes.
 
 ---
@@ -111,7 +112,7 @@ Found with the RTL cycle traces. Patches in `rtl_patches/`, accepted set in
 | J | mvin scaler 4 units -> one per column | scaled mvins (resadd) at 4 cycles/row: resadd 3,080 -> 1,408 | 29,569 |
 | K | `max_in_flight_mem_reqs` 16 -> 64 | Load/StoreController had only 2 commands in flight (latency-bound small loads/stores) | 27,841* |
 | L | reservation station keeps mvout_spad's accumulator source (bug fix) | RS wiped it, so compute could overwrite accumulator rows a mvout_spad was reading | unchanged |
-| M | DMA writer: 2-row queue between block gathering and TileLink writes | writer took the next row's blocks only when idle | -353 (see phase 3) |
+| M | DMA writer: 2-row queue between block gathering and TileLink writes | writer took the next row's blocks only when idle | -563 (see phase 3) |
 
 \* K was measured after the C change `OPT_ATT_STRIDE` (28,830).
 Dropped: load RS entries 8 -> 16 (no change), load+store 16 (-28).
@@ -130,7 +131,13 @@ Dropped: load RS entries 8 -> 16 (no change), load+store 16 (-28).
 | `OPT_CONV2_RESIDENT` | conv2 weights resident (b_spad_id = 2 fixes the region) | 18 KB reload, not overlapped in conv loops | 24,483 |
 | `OPT_CONV1_WINDOW` | conv1 as a matmul over sliding 32-byte windows of the input (stride-1 mvins, zero-padded 32x64 weights) | loop_conv overhead for a 1-channel conv | 24,056 |
 | `OPT_CONV3_RESIDENT` | conv3 weights resident in the freed id-1 conv region | weight reload | 23,834 |
-| (M, RTL) | pipelined DMA writer | store tails | **23,481** |
+| (M, RTL) | pipelined DMA writer | store tails | **23,271** |
+
+The M step was first reported as 23,481 (-353): that number came from a run
+with the diagnostic printf patches and `+verbose`, which shifts cycle counts
+by up to a few hundred. Untraced, the same C file gives 23,834 before M and
+23,271 after; all numbers in this report are from untraced runs unless the
+row says otherwise.
 
 Tried: the fc tail on the CPU again with parallel accumulators and fcvt
 rounding (2,127 vs 848 cycles, slower); qkv scratchpad chaining with L
@@ -139,6 +146,60 @@ time and the three loops share one accumulator region); softmax chaining
 (hangs, and the scratchpad store unit has no softmax sequence).
 
 ---
+
+## Phase 4: joint HW/SW step, scratchpad chains (Verilator)
+
+The SW option that only pays with matching hardware: keep qkv's outputs
+(theta, phi, g) and attention*g's output in the scratchpad (mvout_spad /
+spad_only loops) instead of storing them to DRAM and loading them back.
+It needed three RTL changes, and the RTL parameters were then re-chosen for
+it (`src/hw_sweep.py`: each variant applied on the node, simulator rebuilt,
+both the chained and the unchained C measured).
+
+| RTL change | Why the chain needs it |
+|---|---|
+| L (earlier) | the reservation station dropped a mvout_spad's accumulator source, so a compute could overwrite rows it was still reading (assertion) |
+| N | a spad_only loop's bias load did not follow the accumulator double-buffering (`inc_acc_addr`): with double-buffering on the stock RTL the bias lands in the other half (all 4 patches wrong) |
+| O | mvout_spad waited for every earlier store to complete |
+| P: store RS 8 -> 16 | a mvout_spad keeps its RS entry until its scratchpad write completes (a DRAM store is acknowledged at the accumulator read), so 8 entries throttled the qkv loops and delayed the next loop |
+
+| RTL | base (no chain) | qa (chains, no double-buffering) | qc2 (qkv chain) | qa2 (both chains + double-buffering) |
+|---|---:|---:|---:|---:|
+| A-M + N + O | 23,271 | 23,324 | 23,479 | 23,228 |
+| + P (store RS 16) | 23,271 | 23,203 **wrong** | 22,952 | **22,751** |
+| + store RS 32 | 23,271 | 23,203 wrong | 22,952 | 22,751 |
+| + `max_in_flight_mem_reqs` 32 | 23,552 | 23,463 wrong | 23,245 | 22,944 |
+
+Other parameters on A-M + N + O (base / qa2): Normalizer stat ids 4:
+23,481 / 23,287; mvin scaler 8 units: 25,333 / 25,209; load RS 16: 23,290 /
+23,189. So: stat ids 8, a scaler per column, load RS 8, store RS 16,
+in-flight 64.
+
+- Without double-buffering the chained loops share one accumulator region,
+  and a later loop's computes can enter the reservation station before an
+  earlier loop's mvout_spads that still read those rows; its dependency check
+  only looks at older entries. With 16 store entries that showed (3 of 4
+  patches wrong), so the C file now refuses the chains without
+  `OPT_SPAD_ACC2`.
+- The chains move time between layers (qkv +~400 at 8 store entries; theta*phi^T
+  -255, NLB out -217) and with store RS 16 net -520.
+- The chains are behind `-DOPT_FOR_PATCHED_RTL`: the default C build stays
+  correct on the stock RTL (34,028 on FireSim).
+- The scratchpad banks are single-ported, so the chain buffers sit where no
+  loop writes a bank it reads (theta/g bank 1, phi/attention*g bank 3).
+
+**Final version**: `exo/braggnn_final.c` is this configuration with every
+compile-time switch resolved and the unused code removed (491 lines, no
+`#if`): 22,743 cycles/patch on A-P, predictions identical to the seed's. It
+needs the A-P RTL; `exo/braggnn_tune_opus.c`'s default build is the one for
+the stock RTL.
+
+Regression on A-P: gemmini-rocc-tests mvin_mvout_spad, mvin_mvout_acc,
+raw_hazard, resadd, resadd_stride, tiled_matmul_ws_softmax,
+tiled_matmul_ws_layernorm, tiled_matmul_ws, matmul_ws, conv_first_layer and
+mvin_scale pass; matmul_spad fails as on the stock RTL; conv_with_pool was
+stopped after 55 minutes (it passes on A-M). OPT_BASELINE 34,254, default
+build 23,271, `-DOPT_FOR_PATCHED_RTL` 22,751: all bit-exact.
 
 ## Where the time goes now (trace of the 23,481 build, one patch)
 
@@ -185,7 +246,10 @@ cycles).
   matmul_spad fails as on the unmodified RTL, 8 large conv / tiled tests
   unfinished after 3 hours on Verilator (see below).
 - Commits: branch `add-gcp-cluster` (not pushed); the firesim node's shared
-  `~/gemmini4xraymodels` carries A-M in place.
+  `~/gemmini4xraymodels` carries A-P in place (`rtl_patches/combined_A-P.patch`).
+- `src/verilator_eval.py` could not rebuild the Exo seed's ELF on 2026-09-26
+  (a Cython/pysmt compile error on the exo_build node); the OPT_BASELINE build
+  (the seed's Gemmini calls in C) is the substitute check on A-P.
 
 ## Other-workload validation (gemmini-rocc-tests)
 

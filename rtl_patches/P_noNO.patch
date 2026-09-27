@@ -1,0 +1,55 @@
+diff --git a/src/main/scala/gemmini/LoopMatmul.scala b/src/main/scala/gemmini/LoopMatmul.scala
+--- a/src/main/scala/gemmini/LoopMatmul.scala
++++ b/src/main/scala/gemmini/LoopMatmul.scala
+@@ -1205,11 +1205,7 @@
+     loop_requesting_ldD.running := true.B
+     loop_requesting_ldD.ldd_started := true.B
+ 
++    when (loop_requesting_ldD.c_dram_addr =/= 0.U) {
+-    // Same rule as ex_c_addr_start / st_c_addr_start below, so that a
+-    // spad_only loop with inc_acc_addr loads its D into the accumulator half
+-    // it computes and stores from.
+-    when (Mux(loop_requesting_ldD.spad_only, loop_requesting_ldD.inc_acc_addr,
+-      loop_requesting_ldD.c_dram_addr =/= 0.U)) {
+       ld_d_addr_start := floorAdd(ld_d_addr_start, (max_acc_addr / concurrent_loops).U, max_acc_addr.U)
+     }
+   }
+diff --git a/src/main/scala/gemmini/ReservationStation.scala b/src/main/scala/gemmini/ReservationStation.scala
+--- a/src/main/scala/gemmini/ReservationStation.scala
++++ b/src/main/scala/gemmini/ReservationStation.scala
+@@ -374,11 +374,13 @@
+         )
+       })
+ 
++      // Same q: stores issue in order and the StoreController runs them in
++      // order, so a store waits only for the unissued ones before it. A
++      // mvout_spad still waits for (and is waited for by) every store before
++      // it until that one completes.
++      val new_is_st_spad = new_entry.cmd.cmd.inst.funct === STORE_SPAD_CMD
++      new_entry.deps_st := VecInit(entries_st.map { e => e.valid &&
++        (!e.bits.issued || new_is_st_spad || e.bits.cmd.cmd.inst.funct === STORE_SPAD_CMD) })
+-      // Same q: stores (mvout and mvout_spad alike) issue in order and the
+-      // StoreController runs them in order, so a store waits only for the
+-      // unissued ones before it. Loads / computes still wait for a store until
+-      // it completes (their deps_st, incl. a mvout_spad's accumulator source).
+-      new_entry.deps_st := VecInit(entries_st.map { e => e.valid && !e.bits.issued })
+     }
+ 
+     new_entry.allocated_at := instructions_allocated
+@@ -472,9 +474,13 @@
+           if ((q == q_) && (q_ != stq)) {
+             deps_type(issue_id) := false.B
+           } else if ((q == q_) && (q_ == stq)) {
++            // normal mvouts are not blocked until the ones before them complete
++            // (see deps_st at allocation); mvout_spad still is
++            when (issue_entry.bits.complete_on_issue ||
++              (issue_entry.bits.cmd.cmd.inst.funct =/= STORE_SPAD_CMD &&
++                e.bits.cmd.cmd.inst.funct =/= STORE_SPAD_CMD)) {
++              deps_type(issue_id) := false.B
++            }
+-            // stores are not blocked until the ones before them complete (see
+-            // deps_st at allocation)
+-            deps_type(issue_id) := false.B
+           } else {
+             when (issue_entry.bits.complete_on_issue) {
+               deps_type(issue_id) := false.B
